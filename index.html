@@ -53,6 +53,25 @@
       </div>
 
       <div class="scanner__controls">
+        <label class="field" for="crop-mode">
+          <span class="field__label">Hình mã</span>
+          <select id="crop-mode">
+            <option value="auto" selected>Tự động (vuông + ngang + dọc)</option>
+            <option value="square">Vuông</option>
+            <option value="wide">Chữ nhật ngang</option>
+            <option value="tall">Chữ nhật dọc</option>
+          </select>
+        </label>
+
+        <div class="field">
+          <span class="field__label">Zoom focus</span>
+          <div class="segmented" id="zoom-controls" role="group" aria-label="Mức zoom">
+            <button type="button" class="segmented__btn is-active" data-zoom="1">1x</button>
+            <button type="button" class="segmented__btn" data-zoom="2">2x</button>
+            <button type="button" class="segmented__btn" data-zoom="4">4x</button>
+          </div>
+        </div>
+
         <label class="field" for="scan-mode">
           <span class="field__label">Chế độ quét</span>
           <select id="scan-mode">
@@ -92,6 +111,8 @@
         <li>Dùng <strong>camera sau</strong> và bật đèn pin nếu có.</li>
         <li>Giữ điện thoại song song bề mặt, cách mã khoảng 10–15 cm.</li>
         <li>Di chuyển chậm để lấy nét; tránh bóng che mã.</li>
+        <li>Chọn <strong>Zoom 2x/4x</strong> khi mã nhỏ hoặc khó lấy nét.</li>
+        <li>Dùng khung <strong>Ngang</strong> hoặc <strong>Dọc</strong> cho mã chữ nhật.</li>
         <li>Chọn chế độ <strong>Dot / tương phản thấp</strong> cho mã chấm khắc.</li>
         <li>Thử nghiêng nhẹ để tăng độ tương phản ánh sáng.</li>
       </ul>

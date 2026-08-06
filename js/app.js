@@ -1,8 +1,11 @@
 import { BrowserDatamatrixCodeReader } from 'https://esm.sh/@zxing/browser@0.1.5';
 import { DecodeHintType } from 'https://esm.sh/@zxing/library@0.21.3';
 import {
+  CROP_PROFILES,
+  captureVideoFrame,
+  createLiveScanScheduler,
   decodeImageWithVariants,
-  decodeLiveFrame,
+  decodeLiveAttempt,
   getLivePipelineNames,
   loadImageFromFile,
 } from './image-decode.js';
@@ -13,10 +16,12 @@ const placeholder = document.getElementById('placeholder');
 const scanBadge = document.getElementById('scan-badge');
 const scanFrame = document.getElementById('scan-frame');
 const scanModeSelect = document.getElementById('scan-mode');
+const cropModeSelect = document.getElementById('crop-mode');
 const cameraSelect = document.getElementById('camera-select');
 const startBtn = document.getElementById('start-btn');
 const stopBtn = document.getElementById('stop-btn');
 const torchBtn = document.getElementById('torch-btn');
+const zoomControls = document.getElementById('zoom-controls');
 const statusEl = document.getElementById('status');
 const latestResult = document.getElementById('latest-result');
 const latestValue = document.getElementById('latest-value');
@@ -38,11 +43,12 @@ let scanLoopActive = false;
 let activeStream = null;
 let switchingCamera = false;
 let torchEnabled = false;
-let pipelineIndex = 0;
+let zoomLevel = 1;
+let scanScheduler = null;
 let lastScannedText = '';
 let lastScanTime = 0;
 const SCAN_COOLDOWN_MS = 1500;
-const SCAN_INTERVAL_MS = 100;
+const SCAN_INTERVAL_MS = 80;
 const IOS_CAMERA_RELEASE_DELAY_MS = 350;
 
 function isIOS() {
@@ -54,6 +60,10 @@ function isIOS() {
 
 function getScanMode() {
   return scanModeSelect.value === 'normal' ? 'normal' : 'hard';
+}
+
+function getCropMode() {
+  return cropModeSelect?.value || 'auto';
 }
 
 function isConstraintError(error) {
@@ -72,11 +82,34 @@ function setStatus(message, type = '') {
   }
 }
 
+function updateZoomUi() {
+  zoomControls?.querySelectorAll('[data-zoom]').forEach((button) => {
+    button.classList.toggle('is-active', Number(button.dataset.zoom) === zoomLevel);
+  });
+
+  video.style.transform = zoomLevel > 1 ? `scale(${zoomLevel})` : '';
+  scanBadge.textContent = `Đang quét · ${zoomLevel}x`;
+  updateScanFrameShape();
+}
+
+function updateScanFrameShape() {
+  const cropMode = getCropMode();
+  const profileId = cropMode === 'auto' ? 'square' : cropMode;
+  const profile = CROP_PROFILES[profileId] ?? CROP_PROFILES.square;
+  const aspect = profile.widthRatio / profile.heightRatio;
+
+  scanFrame.style.width = aspect >= 1 ? '76%' : `${76 * aspect}%`;
+  scanFrame.style.height = aspect >= 1 ? `${76 / aspect}%` : '76%';
+  scanFrame.dataset.shape = profileId;
+}
+
 function setScanningUi(active) {
   viewport.classList.toggle('is-active', active);
   viewport.classList.toggle('is-scanning', active);
+  viewport.classList.toggle('is-zoomed', active && zoomLevel > 1);
   scanBadge.hidden = !active;
   scanFrame?.classList.toggle('is-animated', active);
+  updateZoomUi();
 }
 
 function feedbackSuccess() {
@@ -353,76 +386,43 @@ async function loadCameras() {
   }
 }
 
+function createScheduler() {
+  return createLiveScanScheduler({
+    mode: getScanMode(),
+    cropMode: getCropMode(),
+    zoomLevel,
+    pipelineNames: getLivePipelineNames(getScanMode()),
+  });
+}
+
 function stopScanLoop() {
   scanLoopActive = false;
-}
-
-function drawFrameForScan(cropToCenter) {
-  const width = video.videoWidth;
-  const height = video.videoHeight;
-
-  if (cropToCenter) {
-    const cropX = Math.floor(width * 0.1);
-    const cropY = Math.floor(height * 0.1);
-    const cropWidth = Math.floor(width * 0.8);
-    const cropHeight = Math.floor(height * 0.8);
-    scanCanvas.width = cropWidth;
-    scanCanvas.height = cropHeight;
-    scanContext.drawImage(
-      video,
-      cropX,
-      cropY,
-      cropWidth,
-      cropHeight,
-      0,
-      0,
-      cropWidth,
-      cropHeight,
-    );
-    return;
-  }
-
-  scanCanvas.width = width;
-  scanCanvas.height = height;
-  scanContext.drawImage(video, 0, 0, width, height);
-}
-
-function getNextPipelineName() {
-  const pipelines = getLivePipelineNames(getScanMode());
-  const pipelineName = pipelines[pipelineIndex % pipelines.length];
-  pipelineIndex += 1;
-  return pipelineName;
+  scanScheduler = null;
 }
 
 function startScanLoop() {
   stopScanLoop();
   scanLoopActive = true;
-  pipelineIndex = 0;
+  scanScheduler = createScheduler();
 
   const tick = async () => {
-    if (!scanLoopActive || !isScanning) {
+    if (!scanLoopActive || !isScanning || !scanScheduler) {
       return;
     }
 
     if (video.videoWidth > 0 && video.videoHeight > 0) {
-      const pipelineName = getNextPipelineName();
+      const combination = scanScheduler.next();
 
       try {
-        drawFrameForScan(true);
-        const result = await decodeLiveFrame(reader, scanCanvas, pipelineName);
+        captureVideoFrame(video, scanContext, scanCanvas, {
+          zoom: combination.zoom,
+          cropProfile: combination.crop,
+        });
+        const { result } = await decodeLiveAttempt(reader, scanCanvas, combination);
+        scanScheduler.markSuccess(combination);
         addScanResult(result.getText());
       } catch (error) {
-        if (error?.name === 'NotFoundException') {
-          try {
-            drawFrameForScan(false);
-            const fullFrameResult = await decodeLiveFrame(reader, scanCanvas, pipelineName);
-            addScanResult(fullFrameResult.getText());
-          } catch (fullFrameError) {
-            if (fullFrameError?.name !== 'NotFoundException') {
-              console.debug('Scan attempt:', fullFrameError.message);
-            }
-          }
-        } else {
+        if (error?.name !== 'NotFoundException') {
           console.debug('Scan attempt:', error.message);
         }
       }
@@ -449,6 +449,7 @@ async function releaseCamera() {
   }
 
   video.srcObject = null;
+  video.style.transform = '';
   torchBtn.hidden = true;
   torchBtn.disabled = true;
 
@@ -493,12 +494,13 @@ async function startScanning() {
     startBtn.disabled = true;
     stopBtn.disabled = false;
     scanModeSelect.disabled = true;
+    cropModeSelect.disabled = true;
     cameraSelect.disabled = true;
     setScanningUi(true);
     placeholder.textContent = 'Đang khởi động camera...';
 
     const modeLabel = getScanMode() === 'hard' ? 'dot / tương phản thấp' : 'thường';
-    setStatus(`Đang quét (${modeLabel})... Giữ mã trong khung giữa.`, 'scanning');
+    setStatus(`Đang quét (${modeLabel}, zoom ${zoomLevel}x)... Giữ mã trong khung.`, 'scanning');
 
     const preferBack = !cameraSelect.value;
     await startCamera(cameraSelect.value || undefined, preferBack);
@@ -510,6 +512,7 @@ async function startScanning() {
     startBtn.disabled = false;
     stopBtn.disabled = true;
     scanModeSelect.disabled = false;
+    cropModeSelect.disabled = false;
     cameraSelect.disabled = false;
     setScanningUi(false);
     setStatus(getCameraErrorMessage(error), 'error');
@@ -530,7 +533,7 @@ async function switchCamera(deviceId) {
     setStatus('Đang đổi camera...', 'scanning');
     await startCamera(deviceId, false);
     startScanLoop();
-    setStatus('Đang quét... Giữ mã trong khung giữa.', 'scanning');
+    setStatus(`Đang quét (zoom ${zoomLevel}x)... Giữ mã trong khung.`, 'scanning');
   } catch (error) {
     cameraSelect.value = previousValue;
     setStatus(getCameraErrorMessage(error), 'error');
@@ -556,10 +559,21 @@ async function stopScanning() {
   startBtn.disabled = false;
   stopBtn.disabled = true;
   scanModeSelect.disabled = false;
+  cropModeSelect.disabled = false;
   cameraSelect.disabled = false;
   setScanningUi(false);
   placeholder.textContent = 'Nhấn "Bắt đầu quét" để mở camera';
   setStatus('Đã dừng quét.');
+}
+
+function setZoomLevel(level) {
+  zoomLevel = level;
+  updateZoomUi();
+
+  if (isScanning) {
+    startScanLoop();
+    setStatus(`Zoom ${zoomLevel}x — giữ mã trong khung.`, 'scanning');
+  }
 }
 
 async function scanFromFile(file) {
@@ -568,7 +582,7 @@ async function scanFromFile(file) {
   }
 
   await stopScanning();
-  setStatus('Đang xử lý ảnh với nhiều bộ lọc...', 'scanning');
+  setStatus('Đang xử lý ảnh với nhiều thuật toán...', 'scanning');
 
   try {
     const image = await loadImageFromFile(file);
@@ -576,7 +590,7 @@ async function scanFromFile(file) {
     addScanResult(result.getText());
   } catch {
     setStatus(
-      'Không tìm thấy mã DataMatrix. Thử chụp gần hơn, tăng ánh sáng hoặc chọn chế độ Dot / tương phản thấp.',
+      'Không tìm thấy mã DataMatrix. Thử zoom 2x/4x, chọn khung Ngang/Dọc hoặc tăng ánh sáng.',
       'error',
     );
   } finally {
@@ -627,6 +641,20 @@ cameraSelect.addEventListener('change', () => {
 
   switchCamera(deviceId);
 });
+cropModeSelect.addEventListener('change', () => {
+  updateScanFrameShape();
+  if (isScanning) {
+    startScanLoop();
+  }
+});
+zoomControls?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-zoom]');
+  if (!button) {
+    return;
+  }
+
+  setZoomLevel(Number(button.dataset.zoom));
+});
 fileInput.addEventListener('change', (event) => {
   const file = event.target.files?.[0];
   scanFromFile(file);
@@ -637,6 +665,8 @@ window.addEventListener('beforeunload', () => {
     releaseCamera();
   }
 });
+
+updateScanFrameShape();
 
 if (!window.isSecureContext) {
   setStatus(
