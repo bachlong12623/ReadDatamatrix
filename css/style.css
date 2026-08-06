@@ -592,7 +592,11 @@ select:disabled {
     align-items: end;
   }
 
-  .button-row,
+  .button-row {
+    grid-column: 1 / -1;
+    flex-wrap: nowrap;
+  }
+
   .segmented {
     grid-column: 1 / -1;
   }
