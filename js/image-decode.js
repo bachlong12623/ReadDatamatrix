@@ -1,5 +1,14 @@
+import {
+  HARD_PIPELINES,
+  LIVE_PIPELINES,
+  PIPELINES,
+  applyPipeline,
+} from './image-preprocess.js';
+
 const decodeCanvas = document.createElement('canvas');
 const decodeContext = decodeCanvas.getContext('2d', { willReadFrequently: true });
+const workingCanvas = document.createElement('canvas');
+const workingContext = workingCanvas.getContext('2d', { willReadFrequently: true });
 
 export function loadImageFromFile(file) {
   return new Promise((resolve, reject) => {
@@ -30,6 +39,14 @@ function getSourceSize(source) {
     width: source.width,
     height: source.height,
   };
+}
+
+function cloneCanvas(sourceCanvas) {
+  const canvas = document.createElement('canvas');
+  canvas.width = sourceCanvas.width;
+  canvas.height = sourceCanvas.height;
+  canvas.getContext('2d', { willReadFrequently: true }).drawImage(sourceCanvas, 0, 0);
+  return canvas;
 }
 
 function drawOnWhiteCanvas(source, {
@@ -67,71 +84,55 @@ function drawOnWhiteCanvas(source, {
   decodeContext.restore();
   decodeContext.filter = 'none';
 
-  return decodeCanvas;
+  return cloneCanvas(decodeCanvas);
 }
 
-function cloneCanvas(sourceCanvas) {
-  const canvas = document.createElement('canvas');
-  canvas.width = sourceCanvas.width;
-  canvas.height = sourceCanvas.height;
-  canvas.getContext('2d', { willReadFrequently: true }).drawImage(sourceCanvas, 0, 0);
-  return canvas;
+function applyPipelineToCanvas(sourceCanvas, pipelineName) {
+  workingCanvas.width = sourceCanvas.width;
+  workingCanvas.height = sourceCanvas.height;
+  workingContext.drawImage(sourceCanvas, 0, 0);
+  return applyPipeline(workingCanvas, PIPELINES[pipelineName]);
 }
 
-function binarizeCanvas(canvas) {
-  const output = cloneCanvas(canvas);
-  const context = output.getContext('2d', { willReadFrequently: true });
-  const { width, height } = output;
-  const imageData = context.getImageData(0, 0, width, height);
-  const { data } = imageData;
-  let total = 0;
+function buildBaseVariants(source) {
+  const configs = [
+    { paddingRatio: 0.2, scale: 1, rotation: 0 },
+    { paddingRatio: 0.2, scale: 2, rotation: 0 },
+    { paddingRatio: 0.3, scale: 2, rotation: 0 },
+    { paddingRatio: 0.2, scale: 3, rotation: 0 },
+    { paddingRatio: 0.15, scale: 4, rotation: 0 },
+    { paddingRatio: 0.2, scale: 2, rotation: 90 },
+    { paddingRatio: 0.2, scale: 2, rotation: 180 },
+    { paddingRatio: 0.2, scale: 2, rotation: 270 },
+    { paddingRatio: 0.2, scale: 2, rotation: 0, invert: true },
+  ];
 
-  for (let index = 0; index < data.length; index += 4) {
-    total += data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
-  }
-
-  const threshold = total / (data.length / 4);
-  for (let index = 0; index < data.length; index += 4) {
-    const gray = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
-    const value = gray >= threshold ? 255 : 0;
-    data[index] = value;
-    data[index + 1] = value;
-    data[index + 2] = value;
-    data[index + 3] = 255;
-  }
-
-  context.putImageData(imageData, 0, 0);
-  return output;
+  return configs.map((config) => drawOnWhiteCanvas(source, config));
 }
 
-const IMAGE_DECODE_CONFIGS = [
-  { paddingRatio: 0.2, scale: 1, rotation: 0 },
-  { paddingRatio: 0.2, scale: 2, rotation: 0 },
-  { paddingRatio: 0.3, scale: 2, rotation: 0 },
-  { paddingRatio: 0.2, scale: 3, rotation: 0 },
-  { paddingRatio: 0.15, scale: 4, rotation: 0 },
-  { paddingRatio: 0.25, scale: 2, rotation: 0 },
-  { paddingRatio: 0.1, scale: 3, rotation: 0 },
-  { paddingRatio: 0.4, scale: 2, rotation: 0 },
-  { paddingRatio: 0.2, scale: 2, rotation: 90 },
-  { paddingRatio: 0.2, scale: 2, rotation: 180 },
-  { paddingRatio: 0.2, scale: 2, rotation: 270 },
-  { paddingRatio: 0.2, scale: 2, rotation: 0, invert: true },
-];
+function buildPipelineVariants(sourceCanvas, pipelineNames) {
+  const variants = [sourceCanvas];
 
-export function buildImageDecodeVariants(image) {
-  const variants = [];
-
-  for (const config of IMAGE_DECODE_CONFIGS) {
-    variants.push(drawOnWhiteCanvas(image, config));
-    variants.push(binarizeCanvas(drawOnWhiteCanvas(image, config)));
+  for (const pipelineName of pipelineNames) {
+    variants.push(applyPipelineToCanvas(sourceCanvas, pipelineName));
   }
 
   return variants;
 }
 
-export async function decodeImageWithVariants(reader, image) {
-  const variants = buildImageDecodeVariants(image);
+export function buildImageDecodeVariants(image, mode = 'hard') {
+  const pipelineNames = mode === 'hard' ? HARD_PIPELINES : LIVE_PIPELINES;
+  const variants = [];
+
+  for (const baseVariant of buildBaseVariants(image)) {
+    variants.push(...buildPipelineVariants(baseVariant, pipelineNames));
+  }
+
+  return variants;
+}
+
+export async function decodeImageWithVariants(reader, image, mode = 'hard') {
+  const variants = buildImageDecodeVariants(image, mode);
   let lastError;
 
   for (const canvas of variants) {
@@ -148,35 +149,33 @@ export async function decodeImageWithVariants(reader, image) {
   throw lastError ?? new Error('NotFoundException');
 }
 
-export function buildFrameDecodeVariants(sourceCanvas) {
-  const variants = [
-    sourceCanvas,
-    drawOnWhiteCanvas(sourceCanvas, { paddingRatio: 0.15, scale: 1, rotation: 0 }),
-    drawOnWhiteCanvas(sourceCanvas, { paddingRatio: 0.25, scale: 2, rotation: 0 }),
-    binarizeCanvas(drawOnWhiteCanvas(sourceCanvas, { paddingRatio: 0.2, scale: 2, rotation: 0 })),
-  ];
-
-  for (const rotation of [90, 180, 270]) {
-    variants.push(drawOnWhiteCanvas(sourceCanvas, { paddingRatio: 0.2, scale: 2, rotation }));
-  }
-
-  return variants;
+export function buildLiveFrameVariant(sourceCanvas, pipelineName) {
+  const padded = drawOnWhiteCanvas(sourceCanvas, { paddingRatio: 0.18, scale: 2, rotation: 0 });
+  return applyPipelineToCanvas(padded, pipelineName);
 }
 
-export async function decodeCanvasWithVariants(reader, sourceCanvas) {
-  const variants = buildFrameDecodeVariants(sourceCanvas);
-  let lastError;
+export async function decodeLiveFrame(reader, sourceCanvas, pipelineName) {
+  const variants = [
+    sourceCanvas,
+    buildLiveFrameVariant(sourceCanvas, pipelineName),
+    drawOnWhiteCanvas(sourceCanvas, { paddingRatio: 0.2, scale: 2, rotation: 0 }),
+  ];
 
+  let lastError;
   for (const canvas of variants) {
     try {
       return await reader.decodeFromCanvas(canvas);
     } catch (error) {
       lastError = error;
       if (error?.name !== 'NotFoundException') {
-        console.debug('Frame decode attempt:', error.message);
+        console.debug('Live decode attempt:', error.message);
       }
     }
   }
 
   throw lastError ?? new Error('NotFoundException');
+}
+
+export function getLivePipelineNames(mode) {
+  return mode === 'hard' ? HARD_PIPELINES : LIVE_PIPELINES;
 }
