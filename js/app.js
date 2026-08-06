@@ -18,9 +18,25 @@ const fileInput = document.getElementById('file-input');
 const reader = new BrowserDatamatrixCodeReader();
 const scanHistory = [];
 let isScanning = false;
+let scannerControls = null;
 let lastScannedText = '';
 let lastScanTime = 0;
 const SCAN_COOLDOWN_MS = 1500;
+
+function isIOS() {
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+}
+
+function isConstraintError(error) {
+  return (
+    error?.name === 'OverconstrainedError' ||
+    error?.name === 'ConstraintNotSatisfiedError' ||
+    /invalid constraint/i.test(error?.message ?? '')
+  );
+}
 
 function setStatus(message, type = '') {
   statusEl.textContent = message;
@@ -105,6 +121,68 @@ function addScanResult(text) {
   setStatus('Đã quét thành công!', 'success');
 }
 
+function buildCameraConstraintAttempts(deviceId) {
+  const attempts = [];
+
+  if (deviceId) {
+    attempts.push({ video: { deviceId: { ideal: deviceId } } });
+    attempts.push({ video: { deviceId } });
+    if (!isIOS()) {
+      attempts.push({ video: { deviceId: { exact: deviceId } } });
+    }
+  }
+
+  if (isIOS()) {
+    attempts.push({ video: { facingMode: { ideal: 'environment' } } });
+    attempts.push({ video: { facingMode: { ideal: 'user' } } });
+  } else {
+    attempts.push({ video: { facingMode: { ideal: 'environment' } } });
+    attempts.push({ video: { facingMode: 'environment' } });
+  }
+
+  attempts.push({ video: true });
+
+  return attempts;
+}
+
+async function openCameraStream(deviceId) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('Trình duyệt không hỗ trợ truy cập camera.');
+  }
+
+  const attempts = buildCameraConstraintAttempts(deviceId);
+  let lastError;
+
+  for (const constraints of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (error) {
+      lastError = error;
+      if (!isConstraintError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError ?? new Error('Không thể khởi động camera.');
+}
+
+function getCameraErrorMessage(error) {
+  if (error?.name === 'NotAllowedError') {
+    return 'Quyền truy cập camera bị từ chối. Vui lòng cho phép camera trong Cài đặt > Safari > Camera.';
+  }
+
+  if (isConstraintError(error)) {
+    return 'Không thể khởi động camera trên thiết bị này. Hãy thử camera khác hoặc dùng chức năng quét từ ảnh.';
+  }
+
+  if (error?.name === 'NotFoundError') {
+    return 'Không tìm thấy camera trên thiết bị.';
+  }
+
+  return error?.message || 'Không thể khởi động camera.';
+}
+
 async function loadCameras() {
   if (!navigator.mediaDevices?.enumerateDevices) {
     cameraSelect.innerHTML = '<option value="">Không hỗ trợ camera</option>';
@@ -133,11 +211,7 @@ async function loadCameras() {
 }
 
 async function requestCameraPermission() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    throw new Error('Trình duyệt không hỗ trợ truy cập camera.');
-  }
-
-  const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+  const stream = await openCameraStream();
   stream.getTracks().forEach((track) => track.stop());
   await loadCameras();
 }
@@ -148,7 +222,7 @@ async function startScanning() {
   }
 
   try {
-    if (cameraSelect.disabled) {
+    if (isIOS() || cameraSelect.disabled) {
       await requestCameraPermission();
     }
 
@@ -161,7 +235,8 @@ async function startScanning() {
     placeholder.textContent = 'Đang khởi động camera...';
     setStatus('Đang quét... Hướng mã DataMatrix vào khung.', 'scanning');
 
-    await reader.decodeFromVideoDevice(deviceId, video, (result, error) => {
+    const stream = await openCameraStream(deviceId);
+    scannerControls = await reader.decodeFromStream(stream, video, (result, error) => {
       if (result) {
         addScanResult(result.getText());
       }
@@ -172,16 +247,12 @@ async function startScanning() {
     });
   } catch (error) {
     isScanning = false;
+    scannerControls = null;
     startBtn.disabled = false;
     stopBtn.disabled = true;
     cameraSelect.disabled = false;
     viewport.classList.remove('is-active');
-
-    const message =
-      error.name === 'NotAllowedError'
-        ? 'Quyền truy cập camera bị từ chối. Vui lòng cho phép camera trong cài đặt trình duyệt.'
-        : error.message || 'Không thể khởi động camera.';
-    setStatus(message, 'error');
+    setStatus(getCameraErrorMessage(error), 'error');
   }
 }
 
@@ -190,7 +261,11 @@ function stopScanning() {
     return;
   }
 
-  reader.reset();
+  if (scannerControls) {
+    scannerControls.stop();
+    scannerControls = null;
+  }
+
   isScanning = false;
   startBtn.disabled = false;
   stopBtn.disabled = true;
@@ -254,8 +329,8 @@ fileInput.addEventListener('change', (event) => {
 });
 
 window.addEventListener('beforeunload', () => {
-  if (isScanning) {
-    reader.reset();
+  if (isScanning && scannerControls) {
+    scannerControls.stop();
   }
 });
 
@@ -265,6 +340,9 @@ if (!window.isSecureContext) {
     'error',
   );
   startBtn.disabled = true;
+} else if (isIOS()) {
+  cameraSelect.innerHTML = '<option value="">Nhấn "Bắt đầu quét" để kích hoạt camera</option>';
+  cameraSelect.disabled = true;
 } else {
   loadCameras();
 }
