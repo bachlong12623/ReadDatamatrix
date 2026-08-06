@@ -2,9 +2,10 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="description" content="Ứng dụng quét mã DataMatrix bằng camera trực tiếp trên trình duyệt">
   <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <title>DataMatrix Scanner</title>
   <link rel="stylesheet" href="./css/style.css">
 </head>
@@ -25,7 +26,7 @@
       </div>
       <div>
         <h1>DataMatrix Scanner</h1>
-        <p class="header__subtitle">Quét mã DataMatrix bằng camera</p>
+        <p class="header__subtitle">Quét mã chấm, tương phản thấp</p>
       </div>
     </div>
   </header>
@@ -37,18 +38,33 @@
       <div class="scanner__viewport" id="viewport">
         <video id="video" playsinline webkit-playsinline muted autoplay aria-label="Luồng video từ camera"></video>
         <div class="scanner__overlay" aria-hidden="true">
-          <div class="scanner__frame"></div>
+          <div class="scanner__frame" id="scan-frame">
+            <span class="scanner__corner scanner__corner--tl"></span>
+            <span class="scanner__corner scanner__corner--tr"></span>
+            <span class="scanner__corner scanner__corner--bl"></span>
+            <span class="scanner__corner scanner__corner--br"></span>
+            <span class="scanner__laser" id="scan-laser"></span>
+          </div>
         </div>
+        <div class="scanner__badge" id="scan-badge" hidden>Đang quét...</div>
         <p class="scanner__placeholder" id="placeholder">
           Nhấn "Bắt đầu quét" để mở camera
         </p>
       </div>
 
       <div class="scanner__controls">
+        <label class="field" for="scan-mode">
+          <span class="field__label">Chế độ quét</span>
+          <select id="scan-mode">
+            <option value="hard" selected>Dot / tương phản thấp</option>
+            <option value="normal">Thường</option>
+          </select>
+        </label>
+
         <label class="field" for="camera-select">
           <span class="field__label">Camera</span>
           <select id="camera-select" disabled>
-            <option value="">Đang tải danh sách camera...</option>
+            <option value="">Bắt đầu quét để tải danh sách camera</option>
           </select>
         </label>
 
@@ -59,11 +75,27 @@
           <button type="button" class="btn btn--secondary" id="stop-btn" disabled>
             Dừng
           </button>
+          <button type="button" class="btn btn--icon" id="torch-btn" disabled hidden aria-label="Bật đèn pin">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+              <path d="M9 18h6M10 22h4M12 2v2M5.6 5.6 7 7M2 12h2M18.4 5.6 17 7M20 12h2M15 10l-3-6-3 6 3 1v5h0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
       </div>
 
       <p class="status" id="status" role="status" aria-live="polite"></p>
     </section>
+
+    <details class="tips">
+      <summary>Mẹo quét mã dot / tương phản thấp</summary>
+      <ul>
+        <li>Dùng <strong>camera sau</strong> và bật đèn pin nếu có.</li>
+        <li>Giữ điện thoại song song bề mặt, cách mã khoảng 10–15 cm.</li>
+        <li>Di chuyển chậm để lấy nét; tránh bóng che mã.</li>
+        <li>Chọn chế độ <strong>Dot / tương phản thấp</strong> cho mã chấm khắc.</li>
+        <li>Thử nghiêng nhẹ để tăng độ tương phản ánh sáng.</li>
+      </ul>
+    </details>
 
     <section class="result" aria-labelledby="result-heading">
       <div class="result__header">
@@ -84,7 +116,7 @@
       </div>
 
       <p class="result__empty" id="empty-state">
-        Chưa có mã nào được quét. Hướng camera vào mã DataMatrix.
+        Chưa có mã nào được quét. Hướng camera vào mã DataMatrix trong khung.
       </p>
 
       <ol class="history" id="history" hidden aria-label="Lịch sử quét"></ol>
@@ -92,10 +124,10 @@
 
     <section class="upload" aria-labelledby="upload-heading">
       <h2 id="upload-heading">Quét từ ảnh</h2>
-      <p class="upload__hint">Tải ảnh chứa mã DataMatrix. Nên để khoảng trắng quanh mã nếu ảnh chụp sát viền.</p>
+      <p class="upload__hint">Tải ảnh chứa mã DataMatrix. Hệ thống tự xử lý ảnh tương phản thấp và thiếu viền trắng.</p>
       <label class="upload__label">
-        <input type="file" id="file-input" accept="image/*" hidden>
-        <span class="btn btn--secondary">Chọn ảnh</span>
+        <input type="file" id="file-input" accept="image/*" capture="environment" hidden>
+        <span class="btn btn--secondary">Chọn hoặc chụp ảnh</span>
       </label>
     </section>
   </main>

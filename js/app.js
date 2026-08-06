@@ -1,17 +1,22 @@
 import { BrowserDatamatrixCodeReader } from 'https://esm.sh/@zxing/browser@0.1.5';
 import { DecodeHintType } from 'https://esm.sh/@zxing/library@0.21.3';
 import {
-  decodeCanvasWithVariants,
   decodeImageWithVariants,
+  decodeLiveFrame,
+  getLivePipelineNames,
   loadImageFromFile,
 } from './image-decode.js';
 
 const video = document.getElementById('video');
 const viewport = document.getElementById('viewport');
 const placeholder = document.getElementById('placeholder');
+const scanBadge = document.getElementById('scan-badge');
+const scanFrame = document.getElementById('scan-frame');
+const scanModeSelect = document.getElementById('scan-mode');
 const cameraSelect = document.getElementById('camera-select');
 const startBtn = document.getElementById('start-btn');
 const stopBtn = document.getElementById('stop-btn');
+const torchBtn = document.getElementById('torch-btn');
 const statusEl = document.getElementById('status');
 const latestResult = document.getElementById('latest-result');
 const latestValue = document.getElementById('latest-value');
@@ -32,10 +37,12 @@ let isScanning = false;
 let scanLoopActive = false;
 let activeStream = null;
 let switchingCamera = false;
+let torchEnabled = false;
+let pipelineIndex = 0;
 let lastScannedText = '';
 let lastScanTime = 0;
 const SCAN_COOLDOWN_MS = 1500;
-const SCAN_INTERVAL_MS = 120;
+const SCAN_INTERVAL_MS = 100;
 const IOS_CAMERA_RELEASE_DELAY_MS = 350;
 
 function isIOS() {
@@ -43,6 +50,10 @@ function isIOS() {
     /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   );
+}
+
+function getScanMode() {
+  return scanModeSelect.value === 'normal' ? 'normal' : 'hard';
 }
 
 function isConstraintError(error) {
@@ -58,6 +69,22 @@ function setStatus(message, type = '') {
   statusEl.className = 'status';
   if (type) {
     statusEl.classList.add(`is-${type}`);
+  }
+}
+
+function setScanningUi(active) {
+  viewport.classList.toggle('is-active', active);
+  viewport.classList.toggle('is-scanning', active);
+  scanBadge.hidden = !active;
+  scanFrame?.classList.toggle('is-animated', active);
+}
+
+function feedbackSuccess() {
+  viewport.classList.add('is-success-flash');
+  window.setTimeout(() => viewport.classList.remove('is-success-flash'), 500);
+
+  if (navigator.vibrate) {
+    navigator.vibrate(60);
   }
 }
 
@@ -133,6 +160,7 @@ function addScanResult(text) {
     scanHistory.pop();
   }
   renderHistory();
+  feedbackSuccess();
   setStatus('Đã quét thành công!', 'success');
 }
 
@@ -148,6 +176,15 @@ function buildCameraConstraintAttempts(deviceId, preferBack = true) {
   } else if (preferBack) {
     attempts.push({ video: { facingMode: 'environment' } });
     attempts.push({ video: { facingMode: { ideal: 'environment' } } });
+    if (!isIOS()) {
+      attempts.push({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+      });
+    }
   } else {
     attempts.push({ video: { facingMode: 'user' } });
     attempts.push({ video: { facingMode: { ideal: 'user' } } });
@@ -230,6 +267,45 @@ function getActiveDeviceId() {
   return track?.getSettings()?.deviceId ?? '';
 }
 
+function getVideoTrack() {
+  return activeStream?.getVideoTracks()[0] ?? null;
+}
+
+async function updateTorchAvailability() {
+  const track = getVideoTrack();
+  if (!track) {
+    torchBtn.hidden = true;
+    torchBtn.disabled = true;
+    return;
+  }
+
+  try {
+    const capabilities = track.getCapabilities?.();
+    const hasTorch = Boolean(capabilities?.torch);
+    torchBtn.hidden = !hasTorch;
+    torchBtn.disabled = !hasTorch;
+    torchBtn.classList.toggle('is-active', hasTorch && torchEnabled);
+  } catch {
+    torchBtn.hidden = true;
+    torchBtn.disabled = true;
+  }
+}
+
+async function setTorch(enabled) {
+  const track = getVideoTrack();
+  if (!track) {
+    return;
+  }
+
+  try {
+    await track.applyConstraints({ advanced: [{ torch: enabled }] });
+    torchEnabled = enabled;
+    torchBtn.classList.toggle('is-active', enabled);
+  } catch {
+    setStatus('Không thể bật đèn pin trên thiết bị này.', 'error');
+  }
+}
+
 function syncCameraSelect() {
   const activeDeviceId = getActiveDeviceId();
   if (!activeDeviceId) {
@@ -286,10 +362,10 @@ function drawFrameForScan(cropToCenter) {
   const height = video.videoHeight;
 
   if (cropToCenter) {
-    const cropX = Math.floor(width * 0.12);
-    const cropY = Math.floor(height * 0.12);
-    const cropWidth = Math.floor(width * 0.76);
-    const cropHeight = Math.floor(height * 0.76);
+    const cropX = Math.floor(width * 0.1);
+    const cropY = Math.floor(height * 0.1);
+    const cropWidth = Math.floor(width * 0.8);
+    const cropHeight = Math.floor(height * 0.8);
     scanCanvas.width = cropWidth;
     scanCanvas.height = cropHeight;
     scanContext.drawImage(
@@ -311,14 +387,17 @@ function drawFrameForScan(cropToCenter) {
   scanContext.drawImage(video, 0, 0, width, height);
 }
 
-async function decodeCurrentFrame(cropToCenter) {
-  drawFrameForScan(cropToCenter);
-  return decodeCanvasWithVariants(reader, scanCanvas);
+function getNextPipelineName() {
+  const pipelines = getLivePipelineNames(getScanMode());
+  const pipelineName = pipelines[pipelineIndex % pipelines.length];
+  pipelineIndex += 1;
+  return pipelineName;
 }
 
 function startScanLoop() {
   stopScanLoop();
   scanLoopActive = true;
+  pipelineIndex = 0;
 
   const tick = async () => {
     if (!scanLoopActive || !isScanning) {
@@ -326,13 +405,17 @@ function startScanLoop() {
     }
 
     if (video.videoWidth > 0 && video.videoHeight > 0) {
+      const pipelineName = getNextPipelineName();
+
       try {
-        const result = await decodeCurrentFrame(true);
+        drawFrameForScan(true);
+        const result = await decodeLiveFrame(reader, scanCanvas, pipelineName);
         addScanResult(result.getText());
       } catch (error) {
         if (error?.name === 'NotFoundException') {
           try {
-            const fullFrameResult = await decodeCurrentFrame(false);
+            drawFrameForScan(false);
+            const fullFrameResult = await decodeLiveFrame(reader, scanCanvas, pipelineName);
             addScanResult(fullFrameResult.getText());
           } catch (fullFrameError) {
             if (fullFrameError?.name !== 'NotFoundException') {
@@ -356,12 +439,18 @@ function startScanLoop() {
 async function releaseCamera() {
   stopScanLoop();
 
+  if (torchEnabled) {
+    await setTorch(false).catch(() => {});
+  }
+
   if (activeStream) {
     activeStream.getTracks().forEach((track) => track.stop());
     activeStream = null;
   }
 
   video.srcObject = null;
+  torchBtn.hidden = true;
+  torchBtn.disabled = true;
 
   if (isIOS()) {
     await new Promise((resolve) => setTimeout(resolve, IOS_CAMERA_RELEASE_DELAY_MS));
@@ -389,6 +478,7 @@ async function startCamera(deviceId, preferBack = true) {
   await attachStreamToVideo(activeStream);
   await waitForVideoReady();
   await loadCameras();
+  await updateTorchAvailability();
 }
 
 async function startScanning() {
@@ -402,10 +492,13 @@ async function startScanning() {
     isScanning = true;
     startBtn.disabled = true;
     stopBtn.disabled = false;
+    scanModeSelect.disabled = true;
     cameraSelect.disabled = true;
-    viewport.classList.add('is-active');
+    setScanningUi(true);
     placeholder.textContent = 'Đang khởi động camera...';
-    setStatus('Đang quét... Hướng mã DataMatrix vào khung.', 'scanning');
+
+    const modeLabel = getScanMode() === 'hard' ? 'dot / tương phản thấp' : 'thường';
+    setStatus(`Đang quét (${modeLabel})... Giữ mã trong khung giữa.`, 'scanning');
 
     const preferBack = !cameraSelect.value;
     await startCamera(cameraSelect.value || undefined, preferBack);
@@ -416,8 +509,9 @@ async function startScanning() {
     isScanning = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
+    scanModeSelect.disabled = false;
     cameraSelect.disabled = false;
-    viewport.classList.remove('is-active');
+    setScanningUi(false);
     setStatus(getCameraErrorMessage(error), 'error');
   }
 }
@@ -436,7 +530,7 @@ async function switchCamera(deviceId) {
     setStatus('Đang đổi camera...', 'scanning');
     await startCamera(deviceId, false);
     startScanLoop();
-    setStatus('Đang quét... Hướng mã DataMatrix vào khung.', 'scanning');
+    setStatus('Đang quét... Giữ mã trong khung giữa.', 'scanning');
   } catch (error) {
     cameraSelect.value = previousValue;
     setStatus(getCameraErrorMessage(error), 'error');
@@ -461,8 +555,9 @@ async function stopScanning() {
   isScanning = false;
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  scanModeSelect.disabled = false;
   cameraSelect.disabled = false;
-  viewport.classList.remove('is-active');
+  setScanningUi(false);
   placeholder.textContent = 'Nhấn "Bắt đầu quét" để mở camera';
   setStatus('Đã dừng quét.');
 }
@@ -473,15 +568,15 @@ async function scanFromFile(file) {
   }
 
   await stopScanning();
-  setStatus('Đang xử lý ảnh...', 'scanning');
+  setStatus('Đang xử lý ảnh với nhiều bộ lọc...', 'scanning');
 
   try {
     const image = await loadImageFromFile(file);
-    const result = await decodeImageWithVariants(reader, image);
+    const result = await decodeImageWithVariants(reader, image, getScanMode());
     addScanResult(result.getText());
   } catch {
     setStatus(
-      'Không tìm thấy mã DataMatrix trong ảnh. Hãy chụp ảnh rõ hơn và để khoảng trắng quanh mã.',
+      'Không tìm thấy mã DataMatrix. Thử chụp gần hơn, tăng ánh sáng hoặc chọn chế độ Dot / tương phản thấp.',
       'error',
     );
   } finally {
@@ -517,6 +612,9 @@ startBtn.addEventListener('click', startScanning);
 stopBtn.addEventListener('click', stopScanning);
 copyBtn.addEventListener('click', copyLatest);
 clearBtn.addEventListener('click', clearHistory);
+torchBtn.addEventListener('click', () => {
+  setTorch(!torchEnabled);
+});
 cameraSelect.addEventListener('change', () => {
   if (!isScanning || switchingCamera) {
     return;
@@ -546,7 +644,4 @@ if (!window.isSecureContext) {
     'error',
   );
   startBtn.disabled = true;
-} else {
-  cameraSelect.innerHTML = '<option value="">Bắt đầu quét để tải danh sách camera</option>';
-  cameraSelect.disabled = true;
 }
