@@ -1,5 +1,10 @@
 import { BrowserDatamatrixCodeReader } from 'https://esm.sh/@zxing/browser@0.1.5';
 import { DecodeHintType } from 'https://esm.sh/@zxing/library@0.21.3';
+import {
+  decodeCanvasWithVariants,
+  decodeImageWithVariants,
+  loadImageFromFile,
+} from './image-decode.js';
 
 const video = document.getElementById('video');
 const viewport = document.getElementById('viewport');
@@ -308,7 +313,7 @@ function drawFrameForScan(cropToCenter) {
 
 async function decodeCurrentFrame(cropToCenter) {
   drawFrameForScan(cropToCenter);
-  return reader.decodeFromCanvas(scanCanvas);
+  return decodeCanvasWithVariants(reader, scanCanvas);
 }
 
 function startScanLoop() {
@@ -470,14 +475,16 @@ async function scanFromFile(file) {
   await stopScanning();
   setStatus('Đang xử lý ảnh...', 'scanning');
 
-  const url = URL.createObjectURL(file);
   try {
-    const result = await reader.decodeFromImageUrl(url);
+    const image = await loadImageFromFile(file);
+    const result = await decodeImageWithVariants(reader, image);
     addScanResult(result.getText());
   } catch {
-    setStatus('Không tìm thấy mã DataMatrix trong ảnh.', 'error');
+    setStatus(
+      'Không tìm thấy mã DataMatrix trong ảnh. Hãy chụp ảnh rõ hơn và để khoảng trắng quanh mã.',
+      'error',
+    );
   } finally {
-    URL.revokeObjectURL(url);
     fileInput.value = '';
   }
 }
