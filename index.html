@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Ứng dụng quét mã DataMatrix bằng camera trực tiếp trên trình duyệt">
+  <meta name="theme-color" content="#0f172a">
+  <title>DataMatrix Scanner</title>
+  <link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header__inner">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="28" height="28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="2" y="2" width="28" height="28" rx="4" stroke="currentColor" stroke-width="2"/>
+          <rect x="6" y="6" width="8" height="8" fill="currentColor"/>
+          <rect x="18" y="6" width="8" height="8" fill="currentColor"/>
+          <rect x="6" y="18" width="8" height="8" fill="currentColor"/>
+          <rect x="18" y="18" width="4" height="4" fill="currentColor"/>
+          <rect x="24" y="18" width="2" height="2" fill="currentColor"/>
+          <rect x="18" y="24" width="2" height="2" fill="currentColor"/>
+          <rect x="22" y="22" width="4" height="4" fill="currentColor"/>
+        </svg>
+      </div>
+      <div>
+        <h1>DataMatrix Scanner</h1>
+        <p class="header__subtitle">Quét mã DataMatrix bằng camera</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="scanner" aria-labelledby="scanner-heading">
+      <h2 id="scanner-heading" class="visually-hidden">Khu vực quét</h2>
+
+      <div class="scanner__viewport" id="viewport">
+        <video id="video" playsinline muted aria-label="Luồng video từ camera"></video>
+        <div class="scanner__overlay" aria-hidden="true">
+          <div class="scanner__frame"></div>
+        </div>
+        <p class="scanner__placeholder" id="placeholder">
+          Nhấn "Bắt đầu quét" để mở camera
+        </p>
+      </div>
+
+      <div class="scanner__controls">
+        <label class="field" for="camera-select">
+          <span class="field__label">Camera</span>
+          <select id="camera-select" disabled>
+            <option value="">Đang tải danh sách camera...</option>
+          </select>
+        </label>
+
+        <div class="button-row">
+          <button type="button" class="btn btn--primary" id="start-btn">
+            Bắt đầu quét
+          </button>
+          <button type="button" class="btn btn--secondary" id="stop-btn" disabled>
+            Dừng
+          </button>
+        </div>
+      </div>
+
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="result" aria-labelledby="result-heading">
+      <div class="result__header">
+        <h2 id="result-heading">Kết quả quét</h2>
+        <button type="button" class="btn btn--ghost btn--sm" id="clear-btn" disabled>
+          Xóa lịch sử
+        </button>
+      </div>
+
+      <div class="result__latest" id="latest-result" hidden>
+        <p class="result__label">Mã vừa quét</p>
+        <output class="result__value" id="latest-value" for=""></output>
+        <div class="button-row">
+          <button type="button" class="btn btn--secondary btn--sm" id="copy-btn">
+            Sao chép
+          </button>
+        </div>
+      </div>
+
+      <p class="result__empty" id="empty-state">
+        Chưa có mã nào được quét. Hướng camera vào mã DataMatrix.
+      </p>
+
+      <ol class="history" id="history" hidden aria-label="Lịch sử quét"></ol>
+    </section>
+
+    <section class="upload" aria-labelledby="upload-heading">
+      <h2 id="upload-heading">Quét từ ảnh</h2>
+      <p class="upload__hint">Không có camera? Tải ảnh chứa mã DataMatrix lên.</p>
+      <label class="upload__label">
+        <input type="file" id="file-input" accept="image/*" hidden>
+        <span class="btn btn--secondary">Chọn ảnh</span>
+      </label>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Chạy hoàn toàn trên trình duyệt — không gửi dữ liệu lên máy chủ.</p>
+  </footer>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
