@@ -23,8 +23,13 @@
   <link rel="manifest" href="manifest.json">
 
   <style>
-    html, body {
+    /* Safari iOS: dùng dvh để khớp vùng nhìn thật (tránh cắt đáy bởi thanh URL) */
+    html {
       height: 100%;
+      height: -webkit-fill-available;
+    }
+
+    html, body {
       width: 100%;
       margin: 0;
       padding: 0;
@@ -34,12 +39,22 @@
       -webkit-text-size-adjust: 100%;
       -webkit-tap-highlight-color: transparent;
       touch-action: manipulation;
+      position: fixed;
+      inset: 0;
+      height: 100%;
+      height: 100dvh;
+      height: -webkit-fill-available;
     }
 
-    /* Flutter view fills the visual viewport including safe areas */
-    flt-glass-pane, flt-scene-host, flutter-view {
-      height: 100% !important;
+    flutter-view,
+    flt-glass-pane,
+    flt-scene-host {
+      position: fixed !important;
+      inset: 0 !important;
       width: 100% !important;
+      height: 100% !important;
+      height: 100dvh !important;
+      max-height: -webkit-fill-available !important;
     }
 
     video {

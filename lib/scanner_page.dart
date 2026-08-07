@@ -419,16 +419,21 @@ class _ScannerPageState extends State<ScannerPage> {
     final colors = Theme.of(context).extension<AppColors>()!;
     final size = MediaQuery.sizeOf(context);
     final padding = MediaQuery.paddingOf(context);
+    final viewPadding = MediaQuery.viewPaddingOf(context);
     final wide = size.width >= 900;
-    final iphone = _profile.isIphone;
+    final phone = !wide;
+    final iphone = _profile.isIphone || _profile.isIosSafariFamily;
+
+    // iPhone Safari: cộng thêm safe-area đáy (home indicator) để không mất lịch sử.
+    final bottomInset = math.max(padding.bottom, viewPadding.bottom) + (iphone ? 10 : 8);
 
     return Scaffold(
       body: Padding(
         padding: EdgeInsets.fromLTRB(
-          16,
-          padding.top + 8,
-          16,
-          padding.bottom + 12,
+          14,
+          padding.top + 6,
+          14,
+          bottomInset,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -442,11 +447,12 @@ class _ScannerPageState extends State<ScannerPage> {
               onInvert: _toggleInvert,
               onGithubSettings: _openGithubSettings,
               onSync: () => _syncWithGithub(),
+              compact: phone,
               subtitle: iphone
-                  ? 'iPhone Air · Safari · camera sau 1×'
+                  ? 'iPhone · Safari · camera 1×'
                   : (_syncStatus ?? 'Vuông · chữ nhật · GitHub JSON'),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             Expanded(
               child: wide
                   ? Row(
@@ -454,19 +460,23 @@ class _ScannerPageState extends State<ScannerPage> {
                       children: [
                         Expanded(flex: 3, child: _buildPreview(colors)),
                         const SizedBox(width: 16),
-                        Expanded(flex: 2, child: _buildSidePanel(colors)),
+                        Expanded(
+                          flex: 2,
+                          child: _buildSidePanel(colors, compact: false),
+                        ),
                       ],
                     )
                   : Column(
                       children: [
-                        Expanded(
-                          flex: iphone ? 7 : 5,
+                        // Camera cố định ~38% — chừa chỗ cho lịch sử phía dưới.
+                        SizedBox(
+                          height: (size.height * 0.36)
+                              .clamp(180.0, phone ? 260.0 : 320.0),
                           child: _buildPreview(colors),
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 10),
                         Expanded(
-                          flex: iphone ? 3 : 4,
-                          child: _buildSidePanel(colors),
+                          child: _buildSidePanel(colors, compact: true),
                         ),
                       ],
                     ),
@@ -561,7 +571,91 @@ class _ScannerPageState extends State<ScannerPage> {
     };
   }
 
-  Widget _buildSidePanel(AppColors colors) {
+  Widget _buildSidePanel(AppColors colors, {required bool compact}) {
+    final resultBox = DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0B1215),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF2A3A42)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(compact ? 10 : 14),
+        child: SingleChildScrollView(
+          child: SelectableText(
+            _latestResult ?? '—',
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: compact ? 13 : 14,
+              height: 1.4,
+              color: _latestResult == null
+                  ? colors.muted
+                  : const Color(0xFFE8F1F4),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final historyList = !_ready
+        ? Text(
+            'Đang tải lịch sử tạm…',
+            style: TextStyle(color: colors.muted, fontSize: 13),
+          )
+        : _history.isEmpty
+            ? Text(
+                'Quét mã — lịch sử hiện ở đây (kéo để xem thêm).',
+                style: TextStyle(color: colors.muted, fontSize: 13),
+              )
+            : ListView.separated(
+                padding: EdgeInsets.only(bottom: compact ? 8 : 0),
+                itemCount: _history.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  final item = _history[index];
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () {
+                      setState(() {
+                        _latestResult = item.text;
+                        _latestAt = item.at;
+                      });
+                    },
+                    onLongPress: () => _copy(item.text),
+                    child: Ink(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFF2A3A42)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            item.text,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.jetBrainsMono(
+                              fontSize: 12,
+                              height: 1.35,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _formatTime(item.at),
+                            style: TextStyle(
+                              color: colors.muted,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              );
+
     return DecoratedBox(
       decoration: BoxDecoration(
         color: colors.surface,
@@ -569,51 +663,32 @@ class _ScannerPageState extends State<ScannerPage> {
         border: Border.all(color: const Color(0xFF2A3A42)),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.fromLTRB(12, compact ? 10 : 16, 12, compact ? 8 : 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
               'Kết quả',
               style: GoogleFonts.spaceGrotesk(
-                fontSize: 18,
+                fontSize: compact ? 16 : 18,
                 fontWeight: FontWeight.w600,
                 letterSpacing: -0.2,
               ),
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 2),
             Text(
               _latestAt == null
                   ? 'Chưa có mã nào được đọc'
                   : 'Lúc ${_formatTime(_latestAt!)}',
-              style: TextStyle(color: colors.muted, fontSize: 13),
+              style: TextStyle(color: colors.muted, fontSize: 12),
             ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0B1215),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0xFF2A3A42)),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: SingleChildScrollView(
-                    child: SelectableText(
-                      _latestResult ?? '—',
-                      style: GoogleFonts.jetBrainsMono(
-                        fontSize: 14,
-                        height: 1.45,
-                        color: _latestResult == null
-                            ? colors.muted
-                            : const Color(0xFFE8F1F4),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+            // Mobile: cao cố định — không chiếm chỗ lịch sử.
+            if (compact)
+              SizedBox(height: 72, child: resultBox)
+            else
+              Expanded(child: resultBox),
+            const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
@@ -623,83 +698,155 @@ class _ScannerPageState extends State<ScannerPage> {
                         : () => _copy(_latestResult!),
                     icon: const Icon(Icons.copy_rounded, size: 18),
                     label: const Text('Sao chép'),
+                    style: compact
+                        ? FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                          )
+                        : null,
                   ),
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton(
                   onPressed: _latestResult == null ? null : _clearLatest,
+                  style: compact
+                      ? OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          visualDensity: VisualDensity.compact,
+                        )
+                      : null,
                   child: const Text('Xóa'),
                 ),
               ],
             ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.tonalIcon(
-                    onPressed:
-                        !_ready || _history.isEmpty
-                            ? null
-                            : () => _exportHistory(ExportFormat.csv),
-                    icon: const Icon(Icons.download_rounded, size: 18),
-                    label: Text(
-                      kIsWeb ? 'Tải CSV' : 'Xuất CSV',
-                      style: const TextStyle(fontSize: 13),
+            const SizedBox(height: 8),
+            if (compact)
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    FilledButton.tonalIcon(
+                      onPressed: !_ready || _history.isEmpty
+                          ? null
+                          : () => _exportHistory(ExportFormat.csv),
+                      icon: const Icon(Icons.download_rounded, size: 16),
+                      label: const Text('CSV'),
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    OutlinedButton.icon(
+                      onPressed: !_ready || _history.isEmpty
+                          ? null
+                          : () => _exportHistory(ExportFormat.txt),
+                      icon: const Icon(Icons.description_outlined, size: 16),
+                      label: const Text('TXT'),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    FilledButton.tonalIcon(
+                      onPressed:
+                          !_ready || _syncing ? null : () => _syncWithGithub(),
+                      icon: _syncing
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.cloud_sync_rounded, size: 16),
+                      label: Text(_syncing ? '…' : 'Sync'),
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    OutlinedButton.icon(
+                      onPressed: !_ready ? null : _openGithubSettings,
+                      icon: const Icon(Icons.key_rounded, size: 16),
+                      label: const Text('Token'),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    IconButton.outlined(
+                      tooltip: 'Xóa lịch sử',
+                      onPressed:
+                          !_ready || _history.isEmpty ? null : _clearHistory,
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: !_ready || _history.isEmpty
+                          ? null
+                          : () => _exportHistory(ExportFormat.csv),
+                      icon: const Icon(Icons.download_rounded, size: 18),
+                      label: Text(kIsWeb ? 'Tải CSV' : 'Xuất CSV'),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed:
-                        !_ready || _history.isEmpty
-                            ? null
-                            : () => _exportHistory(ExportFormat.txt),
-                    icon: const Icon(Icons.description_outlined, size: 18),
-                    label: const Text('TXT', style: TextStyle(fontSize: 13)),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.outlined(
-                  tooltip: 'Xóa toàn bộ lịch sử tạm',
-                  onPressed: !_ready || _history.isEmpty ? null : _clearHistory,
-                  icon: const Icon(Icons.delete_outline_rounded, size: 20),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Lưu tạm local + GitHub JSON · xuất CSV nếu cần',
-              style: TextStyle(color: colors.muted, fontSize: 11),
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.tonalIcon(
-                    onPressed: !_ready || _syncing ? null : () => _syncWithGithub(),
-                    icon: _syncing
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.cloud_sync_rounded, size: 18),
-                    label: Text(
-                      _syncing ? 'Sync…' : 'Sync GitHub',
-                      style: const TextStyle(fontSize: 13),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: !_ready || _history.isEmpty
+                          ? null
+                          : () => _exportHistory(ExportFormat.txt),
+                      icon: const Icon(Icons.description_outlined, size: 18),
+                      label: const Text('TXT'),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: !_ready ? null : _openGithubSettings,
-                  icon: const Icon(Icons.key_rounded, size: 18),
-                  label: const Text('Token', style: TextStyle(fontSize: 13)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
+                  const SizedBox(width: 8),
+                  IconButton.outlined(
+                    tooltip: 'Xóa toàn bộ lịch sử tạm',
+                    onPressed:
+                        !_ready || _history.isEmpty ? null : _clearHistory,
+                    icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: !_ready || _syncing
+                          ? null
+                          : () => _syncWithGithub(),
+                      icon: _syncing
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.cloud_sync_rounded, size: 18),
+                      label: Text(_syncing ? 'Sync…' : 'Sync GitHub'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: !_ready ? null : _openGithubSettings,
+                    icon: const Icon(Icons.key_rounded, size: 18),
+                    label: const Text('Token'),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 8),
             Row(
               children: [
                 Text(
@@ -716,70 +863,9 @@ class _ScannerPageState extends State<ScannerPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: !_ready
-                  ? Text(
-                      'Đang tải lịch sử tạm…',
-                      style: TextStyle(color: colors.muted, fontSize: 13),
-                    )
-                  : _history.isEmpty
-                      ? Text(
-                          'Quét mã trên điện thoại — xuất CSV để lấy trên máy tính.',
-                          style: TextStyle(color: colors.muted, fontSize: 13),
-                        )
-                      : ListView.separated(
-                          itemCount: _history.length,
-                          separatorBuilder: (_, _) => const SizedBox(height: 8),
-                          itemBuilder: (context, index) {
-                            final item = _history[index];
-                            return InkWell(
-                              borderRadius: BorderRadius.circular(12),
-                              onTap: () {
-                                setState(() {
-                                  _latestResult = item.text;
-                                  _latestAt = item.at;
-                                });
-                              },
-                              onLongPress: () => _copy(item.text),
-                              child: Ink(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 10,
-                                ),
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: const Color(0xFF2A3A42),
-                                  ),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      item.text,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: GoogleFonts.jetBrainsMono(
-                                        fontSize: 12,
-                                        height: 1.35,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      _formatTime(item.at),
-                                      style: TextStyle(
-                                        color: colors.muted,
-                                        fontSize: 11,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-            ),
+            const SizedBox(height: 6),
+            // Ưu tiên chỗ cho lịch sử — phần còn lại của panel.
+            Expanded(child: historyList),
           ],
         ),
       ),
@@ -804,12 +890,14 @@ class _Header extends StatelessWidget {
     required this.onInvert,
     required this.onGithubSettings,
     required this.onSync,
+    this.compact = false,
     this.subtitle = 'Vuông · chữ nhật · đảo màu',
   });
 
   final bool invertActive;
   final bool syncing;
   final bool githubReady;
+  final bool compact;
   final VoidCallback onTorch;
   final VoidCallback onSwitchCamera;
   final VoidCallback onInvert;
@@ -821,11 +909,33 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
 
+    Widget iconBtn({
+      required String tooltip,
+      required VoidCallback? onPressed,
+      required IconData icon,
+      bool active = false,
+      Widget? child,
+    }) {
+      return IconButton.filledTonal(
+        tooltip: tooltip,
+        onPressed: onPressed,
+        visualDensity: compact ? VisualDensity.compact : null,
+        style: IconButton.styleFrom(
+          backgroundColor: active
+              ? colors.accent.withValues(alpha: 0.22)
+              : const Color(0xFF1A2A32),
+          foregroundColor:
+              active ? colors.accent : const Color(0xFFE8F1F4),
+        ),
+        icon: child ?? Icon(icon, size: compact ? 20 : 24),
+      );
+    }
+
     return Row(
       children: [
         Container(
-          width: 10,
-          height: 10,
+          width: 8,
+          height: 8,
           decoration: BoxDecoration(
             color: colors.accent,
             shape: BoxShape.circle,
@@ -837,7 +947,7 @@ class _Header extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -845,7 +955,7 @@ class _Header extends StatelessWidget {
               Text(
                 'DataMatrix Reader',
                 style: GoogleFonts.spaceGrotesk(
-                  fontSize: 22,
+                  fontSize: compact ? 18 : 22,
                   fontWeight: FontWeight.w700,
                   letterSpacing: -0.6,
                   height: 1.1,
@@ -855,71 +965,47 @@ class _Header extends StatelessWidget {
                 subtitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: colors.muted, fontSize: 12),
+                style: TextStyle(color: colors.muted, fontSize: 11),
               ),
             ],
           ),
         ),
-        IconButton.filledTonal(
+        iconBtn(
           tooltip: 'Sync GitHub JSON',
           onPressed: syncing ? null : onSync,
-          style: IconButton.styleFrom(
-            backgroundColor: githubReady
-                ? colors.accent.withValues(alpha: 0.22)
-                : const Color(0xFF1A2A32),
-            foregroundColor: githubReady ? colors.accent : const Color(0xFFE8F1F4),
-          ),
-          icon: syncing
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+          icon: Icons.cloud_sync_rounded,
+          active: githubReady,
+          child: syncing
+              ? SizedBox(
+                  width: compact ? 16 : 18,
+                  height: compact ? 16 : 18,
+                  child: const CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Icon(Icons.cloud_sync_rounded),
+              : null,
         ),
-        const SizedBox(width: 6),
-        IconButton.filledTonal(
+        iconBtn(
           tooltip: 'GitHub token',
           onPressed: onGithubSettings,
-          style: IconButton.styleFrom(
-            backgroundColor: const Color(0xFF1A2A32),
-            foregroundColor: const Color(0xFFE8F1F4),
-          ),
-          icon: const Icon(Icons.key_rounded),
+          icon: Icons.key_rounded,
         ),
-        const SizedBox(width: 6),
-        IconButton.filledTonal(
-          tooltip: 'Đảo màu (Android)',
-          onPressed: onInvert,
-          style: IconButton.styleFrom(
-            backgroundColor: invertActive
-                ? colors.accent.withValues(alpha: 0.22)
-                : const Color(0xFF1A2A32),
-            foregroundColor: invertActive
-                ? colors.accent
-                : const Color(0xFFE8F1F4),
+        if (!compact) ...[
+          iconBtn(
+            tooltip: 'Đảo màu (Android)',
+            onPressed: onInvert,
+            icon: Icons.invert_colors_rounded,
+            active: invertActive,
           ),
-          icon: const Icon(Icons.invert_colors_rounded),
-        ),
-        const SizedBox(width: 6),
-        IconButton.filledTonal(
-          tooltip: 'Đèn flash',
-          onPressed: onTorch,
-          style: IconButton.styleFrom(
-            backgroundColor: const Color(0xFF1A2A32),
-            foregroundColor: colors.accent,
+          iconBtn(
+            tooltip: 'Đèn flash',
+            onPressed: onTorch,
+            icon: Icons.flash_on_rounded,
+            active: true,
           ),
-          icon: const Icon(Icons.flash_on_rounded),
-        ),
-        const SizedBox(width: 6),
-        IconButton.filledTonal(
+        ],
+        iconBtn(
           tooltip: 'Đổi camera',
           onPressed: onSwitchCamera,
-          style: IconButton.styleFrom(
-            backgroundColor: const Color(0xFF1A2A32),
-            foregroundColor: const Color(0xFFE8F1F4),
-          ),
-          icon: const Icon(Icons.cameraswitch_rounded),
+          icon: Icons.cameraswitch_rounded,
         ),
       ],
     );
