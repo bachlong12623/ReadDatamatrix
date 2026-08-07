@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,13 +11,8 @@ import 'app_theme.dart';
 import 'barcode_payload.dart';
 import 'device_profile.dart';
 import 'ios_camera_tune.dart';
-
-class ScanHistoryEntry {
-  const ScanHistoryEntry({required this.text, required this.at});
-
-  final String text;
-  final DateTime at;
-}
+import 'scan_export.dart';
+import 'scan_store.dart';
 
 class ScannerPage extends StatefulWidget {
   const ScannerPage({super.key});
@@ -26,11 +22,15 @@ class ScannerPage extends StatefulWidget {
 }
 
 class _ScannerPageState extends State<ScannerPage> {
-  static const _maxHistory = 12;
   static const _dedupeWindow = Duration(milliseconds: 800);
+  static const _hitHold = Duration(seconds: 2);
+  static const _accentGreen = Color(0xFF2EE6A6);
 
   late final DeviceProfile _profile;
+  late final ScanStore _store;
+  late final ScanExporter _exporter;
   late MobileScannerController _controller;
+  bool _ready = false;
   bool _invertImage = false;
   bool _closeRangeApplied = false;
   bool _rebuildingController = false;
@@ -40,14 +40,42 @@ class _ScannerPageState extends State<ScannerPage> {
   DateTime? _latestAt;
   String? _lastAccepted;
   DateTime? _lastAcceptedAt;
-  final List<ScanHistoryEntry> _history = [];
+  final List<ScanRecord> _history = [];
+
+  List<Offset> _hitCorners = const [];
+  Size _hitBarcodeSize = Size.zero;
+  Size _hitCameraSize = Size.zero;
+  Timer? _hitTimer;
 
   @override
   void initState() {
     super.initState();
     _profile = DeviceProfile.detect();
+    _exporter = const ScanExporter();
     _controller = _createController(invertImage: false);
     _controller.addListener(_onControllerState);
+    unawaited(_initStore());
+  }
+
+  Future<void> _initStore() async {
+    _store = await ScanStore.open();
+    final saved = _store.load();
+    if (!mounted) return;
+    setState(() {
+      _history
+        ..clear()
+        ..addAll(saved);
+      if (saved.isNotEmpty) {
+        _latestResult = saved.first.text;
+        _latestAt = saved.first.at;
+      }
+      _ready = true;
+    });
+  }
+
+  Future<void> _persistHistory() async {
+    if (!_ready) return;
+    await _store.save(_history);
   }
 
   MobileScannerController _createController({required bool invertImage}) {
@@ -129,6 +157,7 @@ class _ScannerPageState extends State<ScannerPage> {
 
   @override
   void dispose() {
+    _hitTimer?.cancel();
     _controller.removeListener(_onControllerState);
     _controller.dispose();
     super.dispose();
@@ -145,11 +174,18 @@ class _ScannerPageState extends State<ScannerPage> {
       if (value == null || value.isEmpty) continue;
 
       final now = DateTime.now();
-      if (_lastAccepted == value &&
+      final isDupe = _lastAccepted == value &&
           _lastAcceptedAt != null &&
-          now.difference(_lastAcceptedAt!) < _dedupeWindow) {
-        return;
-      }
+          now.difference(_lastAcceptedAt!) < _dedupeWindow;
+
+      // Luôn cập nhật viền xanh quanh mã đang thấy.
+      _showHit(
+        corners: barcode.corners,
+        barcodeSize: barcode.size,
+        cameraSize: capture.size,
+      );
+
+      if (isDupe) return;
 
       _lastAccepted = value;
       _lastAcceptedAt = now;
@@ -158,15 +194,34 @@ class _ScannerPageState extends State<ScannerPage> {
         _latestResult = value;
         _latestAt = now;
         _history.removeWhere((e) => e.text == value);
-        _history.insert(0, ScanHistoryEntry(text: value, at: now));
-        if (_history.length > _maxHistory) {
-          _history.removeRange(_maxHistory, _history.length);
+        _history.insert(0, ScanRecord(text: value, at: now));
+        if (_history.length > ScanStore.maxRecords) {
+          _history.removeRange(ScanStore.maxRecords, _history.length);
         }
       });
 
-      HapticFeedback.lightImpact();
+      unawaited(_persistHistory());
+      HapticFeedback.mediumImpact();
       return;
     }
+  }
+
+  void _showHit({
+    required List<Offset> corners,
+    required Size barcodeSize,
+    required Size cameraSize,
+  }) {
+    if (corners.isEmpty || cameraSize.isEmpty) return;
+    _hitTimer?.cancel();
+    setState(() {
+      _hitCorners = List<Offset>.from(corners);
+      _hitBarcodeSize = barcodeSize;
+      _hitCameraSize = cameraSize;
+    });
+    _hitTimer = Timer(_hitHold, () {
+      if (!mounted) return;
+      setState(() => _hitCorners = const []);
+    });
   }
 
   Future<void> _toggleTorch() async {
@@ -224,6 +279,38 @@ class _ScannerPageState extends State<ScannerPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Đã sao chép kết quả.')),
     );
+  }
+
+  Future<void> _exportHistory(ExportFormat format) async {
+    if (_history.isEmpty) return;
+    try {
+      await _exporter.exportAndShare(_history, format: format);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            kIsWeb
+                ? 'Đã tải file — trên iPhone chọn Lưu vào Files / iCloud.'
+                : 'Mở share sheet — gửi AirDrop / lưu Files.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không xuất được file: $e')),
+      );
+    }
+  }
+
+  Future<void> _clearHistory() async {
+    setState(() {
+      _history.clear();
+      _latestResult = null;
+      _latestAt = null;
+      _hitCorners = const [];
+    });
+    if (_ready) await _store.clear();
   }
 
   void _clearLatest() {
@@ -305,7 +392,6 @@ class _ScannerPageState extends State<ScannerPage> {
             ),
             controller: _controller,
             fit: BoxFit.cover,
-            // Chạm để lấy nét lại — hữu ích trên iPhone Air khi mã lệch khoảng cách.
             tapToFocus: _profile.isIosSafariFamily || !kIsWeb,
             onDetect: _onDetect,
             errorBuilder: (context, error) {
@@ -319,6 +405,27 @@ class _ScannerPageState extends State<ScannerPage> {
               );
             },
           ),
+          // Viền xanh realtime quanh mã đang detect.
+          IgnorePointer(
+            child: BarcodeOverlay(
+              controller: _controller,
+              boxFit: BoxFit.cover,
+              color: _accentGreen.withValues(alpha: 0.85),
+              style: PaintingStyle.stroke,
+            ),
+          ),
+          // Giữ viền ~2s sau khi đọc thành công để xác nhận mã nào.
+          if (_hitCorners.isNotEmpty)
+            IgnorePointer(
+              child: CustomPaint(
+                painter: _HitBorderPainter(
+                  corners: _hitCorners,
+                  barcodeSize: _hitBarcodeSize,
+                  cameraSize: _hitCameraSize,
+                  color: _accentGreen,
+                ),
+              ),
+            ),
           const IgnorePointer(child: _ScanOverlay()),
           Positioned(
             left: 16,
@@ -420,79 +527,133 @@ class _ScannerPageState extends State<ScannerPage> {
                     label: const Text('Sao chép'),
                   ),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 OutlinedButton(
                   onPressed: _latestResult == null ? null : _clearLatest,
                   child: const Text('Xóa'),
                 ),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    onPressed:
+                        !_ready || _history.isEmpty
+                            ? null
+                            : () => _exportHistory(ExportFormat.csv),
+                    icon: const Icon(Icons.download_rounded, size: 18),
+                    label: Text(
+                      kIsWeb ? 'Tải CSV' : 'Xuất CSV',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed:
+                        !_ready || _history.isEmpty
+                            ? null
+                            : () => _exportHistory(ExportFormat.txt),
+                    icon: const Icon(Icons.description_outlined, size: 18),
+                    label: const Text('TXT', style: TextStyle(fontSize: 13)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.outlined(
+                  tooltip: 'Xóa toàn bộ lịch sử tạm',
+                  onPressed: !_ready || _history.isEmpty ? null : _clearHistory,
+                  icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
             Text(
-              'Lịch sử',
-              style: GoogleFonts.spaceGrotesk(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-              ),
+              'Lưu tạm trên máy · xuất CSV rồi mở trên máy tính (Files/iCloud)',
+              style: TextStyle(color: colors.muted, fontSize: 11),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Text(
+                  'Lịch sử',
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${_history.length}/${ScanStore.maxRecords}',
+                  style: TextStyle(color: colors.muted, fontSize: 12),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             Expanded(
-              child: _history.isEmpty
+              child: !_ready
                   ? Text(
-                      'Các mã vừa quét sẽ hiện tại đây.',
+                      'Đang tải lịch sử tạm…',
                       style: TextStyle(color: colors.muted, fontSize: 13),
                     )
-                  : ListView.separated(
-                      itemCount: _history.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 8),
-                      itemBuilder: (context, index) {
-                        final item = _history[index];
-                        return InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: () {
-                            setState(() {
-                              _latestResult = item.text;
-                              _latestAt = item.at;
-                            });
-                          },
-                          onLongPress: () => _copy(item.text),
-                          child: Ink(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
-                            decoration: BoxDecoration(
+                  : _history.isEmpty
+                      ? Text(
+                          'Quét mã trên điện thoại — xuất CSV để lấy trên máy tính.',
+                          style: TextStyle(color: colors.muted, fontSize: 13),
+                        )
+                      : ListView.separated(
+                          itemCount: _history.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
+                            final item = _history[index];
+                            return InkWell(
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: const Color(0xFF2A3A42),
+                              onTap: () {
+                                setState(() {
+                                  _latestResult = item.text;
+                                  _latestAt = item.at;
+                                });
+                              },
+                              onLongPress: () => _copy(item.text),
+                              child: Ink(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: const Color(0xFF2A3A42),
+                                  ),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      item.text,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: GoogleFonts.jetBrainsMono(
+                                        fontSize: 12,
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _formatTime(item.at),
+                                      style: TextStyle(
+                                        color: colors.muted,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  item.text,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: GoogleFonts.jetBrainsMono(
-                                    fontSize: 12,
-                                    height: 1.35,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  _formatTime(item.at),
-                                  style: TextStyle(
-                                    color: colors.muted,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+                            );
+                          },
+                        ),
             ),
           ],
         ),
@@ -599,6 +760,66 @@ class _Header extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+class _HitBorderPainter extends CustomPainter {
+  const _HitBorderPainter({
+    required this.corners,
+    required this.barcodeSize,
+    required this.cameraSize,
+    required this.color,
+  });
+
+  final List<Offset> corners;
+  final Size barcodeSize;
+  final Size cameraSize;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (corners.length < 4 || cameraSize.isEmpty) return;
+
+    // BoxFit.cover mapping từ toạ độ camera → widget.
+    final scale = math.max(
+      size.width / cameraSize.width,
+      size.height / cameraSize.height,
+    );
+    final dx = (size.width - cameraSize.width * scale) / 2;
+    final dy = (size.height - cameraSize.height * scale) / 2;
+
+    final path = Path();
+    for (var i = 0; i < corners.length; i++) {
+      final p = Offset(
+        corners[i].dx * scale + dx,
+        corners[i].dy * scale + dy,
+      );
+      if (i == 0) {
+        path.moveTo(p.dx, p.dy);
+      } else {
+        path.lineTo(p.dx, p.dy);
+      }
+    }
+    path.close();
+
+    final fill = Paint()
+      ..color = color.withValues(alpha: 0.18)
+      ..style = PaintingStyle.fill;
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeJoin = StrokeJoin.round;
+
+    canvas.drawPath(path, fill);
+    canvas.drawPath(path, stroke);
+  }
+
+  @override
+  bool shouldRepaint(covariant _HitBorderPainter oldDelegate) {
+    return oldDelegate.corners != corners ||
+        oldDelegate.cameraSize != cameraSize ||
+        oldDelegate.color != color;
   }
 }
 
