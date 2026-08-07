@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Patch mobile_scanner (tryInvert + Android dual polarity)
+      - name: Patch mobile_scanner (tryInvert, Android polarity, iOS playsinline)
         run: dart run tool/patch_mobile_scanner.dart
 
       - name: Build web

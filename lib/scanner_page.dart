@@ -8,6 +8,8 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'app_theme.dart';
 import 'barcode_payload.dart';
+import 'device_profile.dart';
+import 'ios_camera_tune.dart';
 
 class ScanHistoryEntry {
   const ScanHistoryEntry({required this.text, required this.at});
@@ -27,10 +29,12 @@ class _ScannerPageState extends State<ScannerPage> {
   static const _maxHistory = 12;
   static const _dedupeWindow = Duration(milliseconds: 800);
 
+  late final DeviceProfile _profile;
   late MobileScannerController _controller;
   bool _invertImage = false;
   bool _closeRangeApplied = false;
   bool _rebuildingController = false;
+  bool _iosCameraTuned = false;
 
   String? _latestResult;
   DateTime? _latestAt;
@@ -41,30 +45,46 @@ class _ScannerPageState extends State<ScannerPage> {
   @override
   void initState() {
     super.initState();
+    _profile = DeviceProfile.detect();
     _controller = _createController(invertImage: false);
     _controller.addListener(_onControllerState);
   }
 
   MobileScannerController _createController({required bool invertImage}) {
+    final iosWeb = _profile.isIosSafariFamily;
+
     return MobileScannerController(
       facing: CameraFacing.back,
-      // Quét mỗi frame — nhạy hơn với mã nhỏ / chữ nhật / góc nghiêng.
-      detectionSpeed: DetectionSpeed.unrestricted,
-      // Chỉ Data Matrix (vuông + chữ nhật ECC200).
+      // iPhone Safari: WASM nặng — interval ~100ms ổn định hơn unrestricted.
+      detectionSpeed: iosWeb ? DetectionSpeed.normal : DetectionSpeed.unrestricted,
+      detectionTimeoutMs: iosWeb ? 100 : 250,
       formats: const [BarcodeFormat.dataMatrix],
-      // Android: độ phân giải cao giúp mã nhỏ / chữ nhật.
-      cameraResolution: kIsWeb ? null : const Size(1920, 1080),
-      // Tắt autoZoom — dễ “bắt nhầm” vùng với mã chữ nhật.
+      // Web/iPhone Air: yêu cầu 1080p (Fusion Main xử lý tốt, WASM vẫn kịp).
+      cameraResolution: const Size(1920, 1080),
       autoZoom: false,
-      // Android: buộc đảo màu (patch package còn xen kẽ mỗi frame khi false).
       invertImage: invertImage && !kIsWeb,
     );
   }
 
   void _onControllerState() {
-    if (!_controller.value.isRunning || _closeRangeApplied) return;
+    if (!_controller.value.isRunning) return;
+
+    if (_profile.isIosSafariFamily && !_iosCameraTuned) {
+      _iosCameraTuned = true;
+      unawaited(_tuneIosCamera());
+    }
+
+    if (_closeRangeApplied) return;
     _closeRangeApplied = true;
     unawaited(_preferCloseRangeLens());
+  }
+
+  Future<void> _tuneIosCamera() async {
+    // Đợi video gắn vào DOM rồi khóa zoom/playsinline.
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    await tuneIosSafariCamera();
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    await tuneIosSafariCamera();
   }
 
   Future<void> _preferCloseRangeLens() async {
@@ -94,6 +114,7 @@ class _ScannerPageState extends State<ScannerPage> {
     setState(() {
       _invertImage = invertImage;
       _closeRangeApplied = false;
+      _iosCameraTuned = false;
     });
 
     final old = _controller;
@@ -215,42 +236,57 @@ class _ScannerPageState extends State<ScannerPage> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<AppColors>()!;
-    final wide = MediaQuery.sizeOf(context).width >= 900;
+    final size = MediaQuery.sizeOf(context);
+    final padding = MediaQuery.paddingOf(context);
+    final wide = size.width >= 900;
+    final iphone = _profile.isIphone;
 
     return Scaffold(
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _Header(
-                invertActive: _invertImage,
-                onTorch: _toggleTorch,
-                onSwitchCamera: _switchCamera,
-                onInvert: _toggleInvert,
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: wide
-                    ? Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(flex: 3, child: _buildPreview(colors)),
-                          const SizedBox(width: 16),
-                          Expanded(flex: 2, child: _buildSidePanel(colors)),
-                        ],
-                      )
-                    : Column(
-                        children: [
-                          Expanded(flex: 5, child: _buildPreview(colors)),
-                          const SizedBox(height: 14),
-                          Expanded(flex: 4, child: _buildSidePanel(colors)),
-                        ],
-                      ),
-              ),
-            ],
-          ),
+      body: Padding(
+        padding: EdgeInsets.fromLTRB(
+          16,
+          padding.top + 8,
+          16,
+          padding.bottom + 12,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _Header(
+              invertActive: _invertImage,
+              onTorch: _toggleTorch,
+              onSwitchCamera: _switchCamera,
+              onInvert: _toggleInvert,
+              subtitle: iphone
+                  ? 'iPhone Air · Safari · camera sau 1×'
+                  : 'Vuông · chữ nhật · đảo màu',
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: wide
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(flex: 3, child: _buildPreview(colors)),
+                        const SizedBox(width: 16),
+                        Expanded(flex: 2, child: _buildSidePanel(colors)),
+                      ],
+                    )
+                  : Column(
+                      children: [
+                        Expanded(
+                          flex: iphone ? 7 : 5,
+                          child: _buildPreview(colors),
+                        ),
+                        const SizedBox(height: 12),
+                        Expanded(
+                          flex: iphone ? 3 : 4,
+                          child: _buildSidePanel(colors),
+                        ),
+                      ],
+                    ),
+            ),
+          ],
         ),
       ),
     );
@@ -269,12 +305,17 @@ class _ScannerPageState extends State<ScannerPage> {
             ),
             controller: _controller,
             fit: BoxFit.cover,
+            // Chạm để lấy nét lại — hữu ích trên iPhone Air khi mã lệch khoảng cách.
+            tapToFocus: _profile.isIosSafariFamily || !kIsWeb,
             onDetect: _onDetect,
             errorBuilder: (context, error) {
               return _CameraMessage(
                 title: 'Không mở được camera',
                 message: _friendlyError(error),
-                onRetry: () => _controller.start(),
+                onRetry: () {
+                  _iosCameraTuned = false;
+                  unawaited(_controller.start());
+                },
               );
             },
           ),
@@ -286,7 +327,9 @@ class _ScannerPageState extends State<ScannerPage> {
             child: Text(
               _invertImage
                   ? 'Chế độ đảo màu · mã trắng trên nền đen'
-                  : 'Vuông / chữ nhật · thường / đảo màu đều được',
+                  : _profile.isIphone
+                      ? 'Giữ ~15–25 cm · camera sau 1× · chạm để lấy nét'
+                      : 'Vuông / chữ nhật · thường / đảo màu đều được',
               textAlign: TextAlign.center,
               style: GoogleFonts.spaceGrotesk(
                 color: Colors.white.withValues(alpha: 0.9),
@@ -471,12 +514,14 @@ class _Header extends StatelessWidget {
     required this.onTorch,
     required this.onSwitchCamera,
     required this.onInvert,
+    this.subtitle = 'Vuông · chữ nhật · đảo màu',
   });
 
   final bool invertActive;
   final VoidCallback onTorch;
   final VoidCallback onSwitchCamera;
   final VoidCallback onInvert;
+  final String subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -513,7 +558,7 @@ class _Header extends StatelessWidget {
                 ),
               ),
               Text(
-                'Vuông · chữ nhật · đảo màu',
+                subtitle,
                 style: TextStyle(color: colors.muted, fontSize: 12),
               ),
             ],

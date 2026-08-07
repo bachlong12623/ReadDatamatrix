@@ -20,6 +20,7 @@ void main() {
   var changed = false;
   changed |= _patchWebTryInvert(root);
   changed |= _patchAndroidAlternateInvert(root);
+  changed |= _patchWebPlaysInline(root);
 
   if (changed) {
     stdout.writeln('Patched mobile_scanner at $root');
@@ -141,5 +142,45 @@ bool _patchAndroidAlternateInvert(Uri root) {
 
   file.writeAsStringSync(source);
   stdout.writeln('✓ Android alternate invert enabled');
+  return true;
+}
+
+bool _patchWebPlaysInline(Uri root) {
+  final file = File.fromUri(
+    root.resolve('lib/src/web/mobile_scanner_web.dart'),
+  );
+  if (!file.existsSync()) return false;
+
+  var source = file.readAsStringSync();
+  if (source.contains('playsinline')) {
+    return false;
+  }
+
+  const needle = '''
+    // Do not show the media controls, as this is a preview element.
+    // Also prevent play/pause events from changing the media controls.
+    videoElement
+      ..controls = false
+''';
+
+  const replacement = '''
+    // iOS Safari requires playsinline + muted or the camera feed goes
+    // fullscreen / fails to play inside the Flutter view.
+    videoElement
+      ..controls = false
+      ..muted = true
+      ..autoplay = true
+      ..setAttribute('playsinline', 'true')
+      ..setAttribute('webkit-playsinline', 'true')
+''';
+
+  if (!source.contains(needle)) {
+    stderr.writeln('Web video element block not found; skip playsinline patch.');
+    return false;
+  }
+
+  source = source.replaceFirst(needle, replacement);
+  file.writeAsStringSync(source);
+  stdout.writeln('✓ Web playsinline/muted enabled for iOS Safari');
   return true;
 }
