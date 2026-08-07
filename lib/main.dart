@@ -108,6 +108,23 @@ class DataMatrixApp extends StatelessWidget {
           ),
           behavior: SnackBarBehavior.floating,
         ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFF0B1215),
+          labelStyle: const TextStyle(color: _muted),
+          hintStyle: TextStyle(color: _muted.withValues(alpha: 0.7)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFF2A3A42)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: _accent),
+          ),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
         dividerColor: const Color(0xFF2A3A42),
         extensions: const [
           AppColors(muted: _muted, accent: _accent, surface: _surface),

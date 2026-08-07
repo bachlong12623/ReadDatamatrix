@@ -36,14 +36,26 @@ flutter run -d ios
 > Sau mỗi `flutter pub get` / nâng cấp package, chạy lại `dart run tool/patch_mobile_scanner.dart`.
 > CI GitHub Pages cũng chạy bước này trước khi build.
 
-### Đồng bộ điện thoại → máy tính
+### Đồng bộ GitHub JSON (khuyên dùng cho 1 người)
 
-1. Quét trên iPhone (dữ liệu lưu tạm trong trình duyệt, tối đa 300 mã).
-2. Bấm **Tải CSV** (hoặc TXT).
-3. Trên Safari chọn **Lưu vào Files** / **iCloud Drive**.
-4. Mở file trên máy tính từ Finder / iCloud.
+Lưu scans vào [`data/scans.json`](data/scans.json) trên repo — điện thoại và máy tính cùng đọc/ghi.
 
-Không cần đăng nhập — file CSV/TXT/JSON là nguồn sự thật để chuyển máy.
+**Không dùng SQLite trên GitHub** (không có DB server; file binary khó merge).
+
+#### Cách bật
+
+1. Tạo [Fine-grained PAT](https://github.com/settings/personal-access-tokens/new):
+   - Repository: `ReadDatamatrix`
+   - Permissions → **Contents: Read and write**
+2. Mở app → **Token** → dán PAT → Lưu
+3. Bấm **Sync GitHub** (hoặc đợi ~2s sau mỗi lần quét — tự đẩy)
+
+Token chỉ lưu trong trình duyệt/máy bạn, không commit lên git.
+
+#### Xuất file thủ công
+
+Vẫn có **Tải CSV/TXT** nếu muốn file offline.
+
 ## Cách dùng
 
 1. Cho phép quyền camera khi được hỏi.

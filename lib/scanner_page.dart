@@ -13,6 +13,8 @@ import 'device_profile.dart';
 import 'ios_camera_tune.dart';
 import 'scan_export.dart';
 import 'scan_store.dart';
+import 'github_sync.dart';
+import 'github_sync_sheet.dart';
 
 class ScannerPage extends StatefulWidget {
   const ScannerPage({super.key});
@@ -29,12 +31,16 @@ class _ScannerPageState extends State<ScannerPage> {
   late final DeviceProfile _profile;
   late final ScanStore _store;
   late final ScanExporter _exporter;
+  GithubScanSync? _github;
   late MobileScannerController _controller;
   bool _ready = false;
   bool _invertImage = false;
   bool _closeRangeApplied = false;
   bool _rebuildingController = false;
   bool _iosCameraTuned = false;
+  bool _syncing = false;
+  String? _syncStatus;
+  Timer? _syncDebounce;
 
   String? _latestResult;
   DateTime? _latestAt;
@@ -59,6 +65,7 @@ class _ScannerPageState extends State<ScannerPage> {
 
   Future<void> _initStore() async {
     _store = await ScanStore.open();
+    _github = await GithubScanSync.open();
     final saved = _store.load();
     if (!mounted) return;
     setState(() {
@@ -71,11 +78,97 @@ class _ScannerPageState extends State<ScannerPage> {
       }
       _ready = true;
     });
+
+    // Nếu đã có token — kéo JSON từ GitHub khi mở app.
+    final config = _github!.loadConfig();
+    if (config.isReady) {
+      unawaited(_syncWithGithub(quiet: true));
+    }
   }
 
   Future<void> _persistHistory() async {
     if (!_ready) return;
     await _store.save(_history);
+    _scheduleGithubPush();
+  }
+
+  void _scheduleGithubPush() {
+    final github = _github;
+    if (github == null) return;
+    final config = github.loadConfig();
+    if (!config.isReady) return;
+    _syncDebounce?.cancel();
+    _syncDebounce = Timer(const Duration(seconds: 2), () {
+      unawaited(_syncWithGithub(quiet: true));
+    });
+  }
+
+  Future<void> _syncWithGithub({bool quiet = false}) async {
+    final github = _github;
+    if (!_ready || _syncing || github == null) return;
+    final config = github.loadConfig();
+    if (!config.isReady) {
+      if (!quiet && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Vào GitHub sync để dán Personal Access Token.')),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _syncing = true;
+      _syncStatus = 'Đang đồng bộ GitHub…';
+    });
+
+    try {
+      final merged = await github.sync(config, _history);
+      await _store.save(merged);
+      if (!mounted) return;
+      setState(() {
+        _history
+          ..clear()
+          ..addAll(merged);
+        if (merged.isNotEmpty) {
+          _latestResult ??= merged.first.text;
+          _latestAt ??= merged.first.at;
+        }
+        _syncStatus =
+            'Đã sync ${merged.length} mã · ${TimeOfDay.now().format(context)}';
+      });
+      if (!quiet) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Đã đồng bộ ${merged.length} mã lên GitHub JSON.')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _syncStatus = 'Sync lỗi: $e');
+      if (!quiet) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync GitHub thất bại: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
+
+  Future<void> _openGithubSettings() async {
+    final github = _github;
+    if (github == null) return;
+    final current = github.loadConfig();
+    final next = await showGithubSyncSheet(context: context, initial: current);
+    if (next == null || !mounted) return;
+    await github.saveConfig(next);
+    setState(() {
+      _syncStatus = next.isReady
+          ? 'Đã lưu token — đang sync…'
+          : 'Đã xóa token';
+    });
+    if (next.isReady) {
+      unawaited(_syncWithGithub());
+    }
   }
 
   MobileScannerController _createController({required bool invertImage}) {
@@ -158,6 +251,7 @@ class _ScannerPageState extends State<ScannerPage> {
   @override
   void dispose() {
     _hitTimer?.cancel();
+    _syncDebounce?.cancel();
     _controller.removeListener(_onControllerState);
     _controller.dispose();
     super.dispose();
@@ -341,12 +435,16 @@ class _ScannerPageState extends State<ScannerPage> {
           children: [
             _Header(
               invertActive: _invertImage,
+              syncing: _syncing,
+              githubReady: _github?.loadConfig().isReady ?? false,
               onTorch: _toggleTorch,
               onSwitchCamera: _switchCamera,
               onInvert: _toggleInvert,
+              onGithubSettings: _openGithubSettings,
+              onSync: () => _syncWithGithub(),
               subtitle: iphone
                   ? 'iPhone Air · Safari · camera sau 1×'
-                  : 'Vuông · chữ nhật · đảo màu',
+                  : (_syncStatus ?? 'Vuông · chữ nhật · GitHub JSON'),
             ),
             const SizedBox(height: 10),
             Expanded(
@@ -571,8 +669,35 @@ class _ScannerPageState extends State<ScannerPage> {
             ),
             const SizedBox(height: 6),
             Text(
-              'Lưu tạm trên máy · xuất CSV rồi mở trên máy tính (Files/iCloud)',
+              'Lưu tạm local + GitHub JSON · xuất CSV nếu cần',
               style: TextStyle(color: colors.muted, fontSize: 11),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.tonalIcon(
+                    onPressed: !_ready || _syncing ? null : () => _syncWithGithub(),
+                    icon: _syncing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.cloud_sync_rounded, size: 18),
+                    label: Text(
+                      _syncing ? 'Sync…' : 'Sync GitHub',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: !_ready ? null : _openGithubSettings,
+                  icon: const Icon(Icons.key_rounded, size: 18),
+                  label: const Text('Token', style: TextStyle(fontSize: 13)),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             Row(
@@ -672,16 +797,24 @@ class _ScannerPageState extends State<ScannerPage> {
 class _Header extends StatelessWidget {
   const _Header({
     required this.invertActive,
+    required this.syncing,
+    required this.githubReady,
     required this.onTorch,
     required this.onSwitchCamera,
     required this.onInvert,
+    required this.onGithubSettings,
+    required this.onSync,
     this.subtitle = 'Vuông · chữ nhật · đảo màu',
   });
 
   final bool invertActive;
+  final bool syncing;
+  final bool githubReady;
   final VoidCallback onTorch;
   final VoidCallback onSwitchCamera;
   final VoidCallback onInvert;
+  final VoidCallback onGithubSettings;
+  final VoidCallback onSync;
   final String subtitle;
 
   @override
@@ -720,11 +853,41 @@ class _Header extends StatelessWidget {
               ),
               Text(
                 subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(color: colors.muted, fontSize: 12),
               ),
             ],
           ),
         ),
+        IconButton.filledTonal(
+          tooltip: 'Sync GitHub JSON',
+          onPressed: syncing ? null : onSync,
+          style: IconButton.styleFrom(
+            backgroundColor: githubReady
+                ? colors.accent.withValues(alpha: 0.22)
+                : const Color(0xFF1A2A32),
+            foregroundColor: githubReady ? colors.accent : const Color(0xFFE8F1F4),
+          ),
+          icon: syncing
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.cloud_sync_rounded),
+        ),
+        const SizedBox(width: 6),
+        IconButton.filledTonal(
+          tooltip: 'GitHub token',
+          onPressed: onGithubSettings,
+          style: IconButton.styleFrom(
+            backgroundColor: const Color(0xFF1A2A32),
+            foregroundColor: const Color(0xFFE8F1F4),
+          ),
+          icon: const Icon(Icons.key_rounded),
+        ),
+        const SizedBox(width: 6),
         IconButton.filledTonal(
           tooltip: 'Đảo màu (Android)',
           onPressed: onInvert,
@@ -738,7 +901,7 @@ class _Header extends StatelessWidget {
           ),
           icon: const Icon(Icons.invert_colors_rounded),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 6),
         IconButton.filledTonal(
           tooltip: 'Đèn flash',
           onPressed: onTorch,
@@ -748,7 +911,7 @@ class _Header extends StatelessWidget {
           ),
           icon: const Icon(Icons.flash_on_rounded),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 6),
         IconButton.filledTonal(
           tooltip: 'Đổi camera',
           onPressed: onSwitchCamera,
