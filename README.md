@@ -12,6 +12,7 @@
 
 ```bash
 flutter pub get
+dart run tool/patch_mobile_scanner.dart   # bắt buộc: đảo màu (web) + xen kẽ polarity (Android)
 ```
 
 ### Web
@@ -32,6 +33,8 @@ flutter run -d android
 flutter run -d ios
 ```
 
+> Sau mỗi `flutter pub get` / nâng cấp package, chạy lại `dart run tool/patch_mobile_scanner.dart`.
+> CI GitHub Pages cũng chạy bước này trước khi build.
 ## Cách dùng
 
 1. Cho phép quyền camera khi được hỏi.

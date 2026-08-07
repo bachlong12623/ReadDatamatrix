@@ -48,15 +48,15 @@ class _ScannerPageState extends State<ScannerPage> {
   MobileScannerController _createController({required bool invertImage}) {
     return MobileScannerController(
       facing: CameraFacing.back,
-      // Quét mỗi frame — nhạy hơn với mã nhỏ / góc nghiêng / ánh sáng yếu.
+      // Quét mỗi frame — nhạy hơn với mã nhỏ / chữ nhật / góc nghiêng.
       detectionSpeed: DetectionSpeed.unrestricted,
-      // Chỉ Data Matrix để engine tập trung (ECC200, GS1, nhiều kích thước).
+      // Chỉ Data Matrix (vuông + chữ nhật ECC200).
       formats: const [BarcodeFormat.dataMatrix],
-      // Android: độ phân giải cao giúp mã nhỏ / xa hơn.
+      // Android: độ phân giải cao giúp mã nhỏ / chữ nhật.
       cameraResolution: kIsWeb ? null : const Size(1920, 1080),
-      // Android: tự zoom khi mã nhỏ trong khung.
-      autoZoom: !kIsWeb,
-      // Android: mã trắng trên nền đen (đảo màu).
+      // Tắt autoZoom — dễ “bắt nhầm” vùng với mã chữ nhật.
+      autoZoom: false,
+      // Android: buộc đảo màu (patch package còn xen kẽ mỗi frame khi false).
       invertImage: invertImage && !kIsWeb,
     );
   }
@@ -285,8 +285,8 @@ class _ScannerPageState extends State<ScannerPage> {
             bottom: 16,
             child: Text(
               _invertImage
-                  ? 'Chế độ đảo màu · đưa mã Data Matrix vào khung'
-                  : 'Đưa mã gần, đủ sáng · hỗ trợ GS1 / binary / đảo màu',
+                  ? 'Chế độ đảo màu · mã trắng trên nền đen'
+                  : 'Vuông / chữ nhật · thường / đảo màu đều được',
               textAlign: TextAlign.center,
               style: GoogleFonts.spaceGrotesk(
                 color: Colors.white.withValues(alpha: 0.9),
@@ -513,7 +513,7 @@ class _Header extends StatelessWidget {
                 ),
               ),
               Text(
-                'Nhạy · GS1 · binary · đảo màu',
+                'Vuông · chữ nhật · đảo màu',
                 style: TextStyle(color: colors.muted, fontSize: 12),
               ),
             ],
@@ -569,27 +569,46 @@ class _ScanOverlay extends StatelessWidget {
 class _ReticlePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    // Overlay nhẹ hơn + khung lớn hơn → dễ đưa mã nhỏ/xa vào vùng nhìn.
-    final dim = Paint()..color = Colors.black.withValues(alpha: 0.28);
+    // Cửa sổ chữ nhật rộng — phù hợp Data Matrix ECC200 hình chữ nhật.
+    final dim = Paint()..color = Colors.black.withValues(alpha: 0.22);
     final stroke = Paint()
       ..color = const Color(0xFF2EE6A6)
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
+    final secondary = Paint()
+      ..color = const Color(0xFF2EE6A6).withValues(alpha: 0.45)
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
 
-    final side = size.shortestSide * 0.72;
+    final short = size.shortestSide;
+    final rectW = (size.width * 0.78).clamp(short * 0.7, size.width * 0.9);
+    // Tỷ lệ ~16:10 gần các size chữ nhật phổ biến (12x26, 16x36, 16x48…).
+    final rectH = (rectW / 1.65).clamp(short * 0.34, size.height * 0.55);
     final rect = Rect.fromCenter(
       center: size.center(Offset.zero),
-      width: side,
-      height: side,
+      width: rectW,
+      height: rectH,
     );
 
     final path = Path()
       ..addRect(Offset.zero & size)
-      ..addRRect(RRect.fromRectAndRadius(rect, const Radius.circular(18)));
+      ..addRRect(RRect.fromRectAndRadius(rect, const Radius.circular(16)));
     canvas.drawPath(path, dim..style = PaintingStyle.fill);
 
-    const corner = 28.0;
+    // Gợi ý mã vuông ở giữa (không che vùng quét).
+    final squareSide = rectH * 0.78;
+    final square = Rect.fromCenter(
+      center: rect.center,
+      width: squareSide,
+      height: squareSide,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(square, const Radius.circular(10)),
+      secondary,
+    );
+
+    const corner = 26.0;
     void drawCorner(Offset a, Offset b, Offset c) {
       canvas.drawLine(a, b, stroke);
       canvas.drawLine(b, c, stroke);

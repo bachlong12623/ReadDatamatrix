@@ -2,7 +2,7 @@ name: Deploy Web to GitHub Pages
 
 on:
   push:
-    branches: [master]
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -29,6 +29,9 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Patch mobile_scanner (tryInvert + Android dual polarity)
+        run: dart run tool/patch_mobile_scanner.dart
 
       - name: Build web
         run: flutter build web --release --base-href /ReadDatamatrix/
