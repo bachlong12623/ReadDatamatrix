@@ -11,8 +11,7 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
   if (kIsWeb) {
-    // zxing-wasm hỗ trợ Data Matrix ổn định trên mọi trình duyệt hiện đại
-    // (kể cả Firefox, nơi BarcodeDetector không có).
+    // zxing-wasm + rxing-wasm song song (multi_decoder.js bọc ZXingWASM).
     MobileScannerPlatform.instance.setWebBarcodeReader(
       WebBarcodeReader.zxingWasm,
     );

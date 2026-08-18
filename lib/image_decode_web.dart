@@ -1,19 +1,11 @@
 import 'dart:async';
 import 'dart:js_interop';
-import 'dart:js_interop_unsafe';
 
 import 'package:web/web.dart';
 
-import 'image_decode.dart';
-
-/// zxing-wasm version — khớp mobile_scanner 7.4.
-const _zxingWasmVersion = '2.1.0';
-
-@JS('ZXingWASM.readBarcodes')
-external JSPromise<JSArray<JSObject>> _wasmReadBarcodes(
-  ImageData imageData,
-  JSObject options,
-);
+import 'image_decode_result.dart';
+import 'image_preprocess.dart';
+import 'multi_decode_bridge.dart';
 
 Future<ImageDecodeResult?> pickAndDecodeImage() async {
   final input = HTMLInputElement()
@@ -79,20 +71,36 @@ Future<ImageDecodeResult?> _decodeImageUrl(String url) async {
   final h = img.naturalHeight;
   if (w <= 0 || h <= 0) return null;
 
-  await _ensureZxingWasm();
+  await ensureMultiDecoders();
 
   final canvas = HTMLCanvasElement(width: w, height: h);
   final ctx = canvas.getContext('2d') as CanvasRenderingContext2D?;
   if (ctx == null) return null;
 
-  final variants = _buildVariants();
-  for (final v in variants) {
+  // Thử parallel toàn ảnh trước (nhanh).
+  ctx.drawImage(img, 0, 0);
+  final full = ctx.getImageData(0, 0, w, h);
+  final quick = await decodeImageDataParallel(full, thorough: true);
+  if (quick != null) {
+    return ImageDecodeResult(
+      text: quick.text,
+      engine: quick.engine,
+      variant: 'full parallel',
+    );
+  }
+
+  // Từng biến thể preprocess + decode song song.
+  for (final v in buildThoroughVariants()) {
     final imageData = _renderVariant(ctx, canvas, img, w, h, v);
     if (imageData == null) continue;
 
-    final text = await _readDataMatrix(imageData);
-    if (text != null && text.isNotEmpty) {
-      return ImageDecodeResult(text: text, variant: v.name);
+    final hit = await decodeImageDataParallel(imageData, thorough: false);
+    if (hit != null) {
+      return ImageDecodeResult(
+        text: hit.text,
+        engine: hit.engine,
+        variant: v.name,
+      );
     }
   }
 
@@ -113,72 +121,30 @@ Future<void> _waitImageLoad(HTMLImageElement img) {
   return c.future;
 }
 
-class _Variant {
-  const _Variant({
-    required this.name,
-    this.quietPad = 0.12,
-    this.cropScale = 1.0,
-    this.contrast = 1.0,
-    this.brightness = 0,
-    this.sharpen = false,
-    this.invert = false,
-  });
-
-  final String name;
-  final double quietPad;
-  final double cropScale;
-  final double contrast;
-  final double brightness;
-  final bool sharpen;
-  final bool invert;
-}
-
-List<_Variant> _buildVariants() => const [
-      _Variant(name: 'gốc'),
-      _Variant(name: 'quiet 18%', quietPad: 0.18),
-      _Variant(name: 'quiet 25%', quietPad: 0.25),
-      _Variant(name: 'quiet 35%', quietPad: 0.35),
-      _Variant(name: 'contrast 1.4', contrast: 1.4),
-      _Variant(name: 'contrast 1.8', contrast: 1.8),
-      _Variant(name: 'tối', contrast: 1.2, brightness: -18),
-      _Variant(name: 'sáng', contrast: 1.2, brightness: 18),
-      _Variant(name: 'sharpen', sharpen: true, contrast: 1.15),
-      _Variant(name: 'đảo màu', invert: true),
-      _Variant(name: 'crop 75%', cropScale: 0.75),
-      _Variant(name: 'crop 55%', cropScale: 0.55),
-      _Variant(name: 'crop 40%', cropScale: 0.40),
-      _Variant(name: 'crop 30% + quiet', cropScale: 0.30, quietPad: 0.25),
-      _Variant(
-        name: 'dot contrast',
-        contrast: 1.6,
-        sharpen: true,
-        cropScale: 0.65,
-      ),
-      _Variant(
-        name: 'dot invert',
-        invert: true,
-        cropScale: 0.55,
-        contrast: 1.3,
-      ),
-    ];
-
 ImageData? _renderVariant(
   CanvasRenderingContext2D ctx,
   HTMLCanvasElement canvas,
   HTMLImageElement img,
   int srcW,
   int srcH,
-  _Variant v,
+  PreprocessVariant v,
 ) {
-  final cropW = (srcW * v.cropScale).round().clamp(8, srcW);
-  final cropH = (srcH * v.cropScale).round().clamp(8, srcH);
+  var cropW = (srcW * v.cropScale).round().clamp(8, srcW);
+  var cropH = (srcH * v.cropScale).round().clamp(8, srcH);
   final sx = ((srcW - cropW) / 2).round();
   final sy = ((srcH - cropH) / 2).round();
 
   final padX = (cropW * v.quietPad).round();
   final padY = (cropH * v.quietPad).round();
-  final outW = cropW + padX * 2;
-  final outH = cropH + padY * 2;
+  var outW = cropW + padX * 2;
+  var outH = cropH + padY * 2;
+
+  if (v.upscale > 1.01) {
+    outW = (outW * v.upscale).round();
+    outH = (outH * v.upscale).round();
+    cropW = (cropW * v.upscale).round();
+    cropH = (cropH * v.upscale).round();
+  }
 
   canvas.width = outW;
   canvas.height = outH;
@@ -189,8 +155,8 @@ ImageData? _renderVariant(
     img,
     sx.toDouble(),
     sy.toDouble(),
-    cropW.toDouble(),
-    cropH.toDouble(),
+    (srcW * v.cropScale).round().toDouble(),
+    (srcH * v.cropScale).round().toDouble(),
     padX.toDouble(),
     padY.toDouble(),
     cropW.toDouble(),
@@ -198,100 +164,20 @@ ImageData? _renderVariant(
   );
 
   var data = ctx.getImageData(0, 0, outW, outH);
-  if (v.contrast != 1.0 || v.brightness != 0 || v.sharpen || v.invert) {
-    data = _processImageData(data, v);
+
+  if (v.niblack ||
+      v.contrast != 1.0 ||
+      v.brightness != 0 ||
+      v.sharpen ||
+      v.invert) {
+    final processed = processRgba(data.data.toDart, outW, outH, v);
+    final out = ImageData(outW, outH);
+    final d = out.data.toDart;
+    for (var i = 0; i < processed.length && i < d.length; i++) {
+      d[i] = processed[i];
+    }
+    data = out;
   }
 
   return data;
-}
-
-ImageData _processImageData(ImageData src, _Variant v) {
-  final out = ImageData(src.width, src.height);
-  final s = src.data.toDart;
-  final d = out.data.toDart;
-  final factor = v.contrast;
-  final bias = 128 * (1 - factor) + v.brightness;
-
-  for (var i = 0; i < s.length; i += 4) {
-    var r = s[i].toDouble();
-    var g = s[i + 1].toDouble();
-    var b = s[i + 2].toDouble();
-
-    if (v.sharpen) {
-      final lum = 0.299 * r + 0.587 * g + 0.114 * b;
-      final edge = (lum - 128) * 0.15;
-      r = (r + edge).clamp(0, 255);
-      g = (g + edge).clamp(0, 255);
-      b = (b + edge).clamp(0, 255);
-    }
-
-    r = (r * factor + bias).clamp(0, 255);
-    g = (g * factor + bias).clamp(0, 255);
-    b = (b * factor + bias).clamp(0, 255);
-
-    if (v.invert) {
-      r = 255 - r;
-      g = 255 - g;
-      b = 255 - b;
-    }
-
-    d[i] = r.round();
-    d[i + 1] = g.round();
-    d[i + 2] = b.round();
-    d[i + 3] = s[i + 3];
-  }
-
-  return out;
-}
-
-Future<void> _ensureZxingWasm() async {
-  final hasWasm = globalContext.has('ZXingWASM');
-  if (hasWasm) return;
-
-  await _loadScript(
-    'https://cdn.jsdelivr.net/npm/zxing-wasm@$_zxingWasmVersion/dist/iife/reader/index.js',
-  );
-
-  for (var i = 0; i < 50; i++) {
-    if (globalContext.has('ZXingWASM')) return;
-    await Future<void>.delayed(const Duration(milliseconds: 60));
-  }
-
-  throw StateError('Không tải được zxing-wasm.');
-}
-
-Future<void> _loadScript(String url) {
-  final completer = Completer<void>();
-  final script = HTMLScriptElement()
-    ..src = url
-    ..async = true
-    ..onload = ((Event _) => completer.complete()).toJS
-    ..onerror =
-        ((Event _) => completer.completeError('Script load failed: $url')).toJS;
-  document.head?.appendChild(script);
-  return completer.future;
-}
-
-Future<String?> _readDataMatrix(ImageData imageData) async {
-  final options = JSObject();
-  options.setProperty('formats'.toJS, JSArray.from(['DataMatrix'.toJS]));
-  options.setProperty('tryHarder'.toJS, true.toJS);
-  options.setProperty('tryRotate'.toJS, true.toJS);
-  options.setProperty('tryInvert'.toJS, true.toJS);
-  options.setProperty('tryDenoise'.toJS, true.toJS);
-  options.setProperty('tryDownscale'.toJS, true.toJS);
-
-  final jsResults = await _wasmReadBarcodes(imageData, options).toDart;
-
-  for (final item in jsResults.toDart) {
-    final valid = item.getProperty('isValid'.toJS);
-    if (valid != true.toJS && valid != true) continue;
-    final textVal = item.getProperty('text'.toJS);
-    if (textVal is JSString) {
-      final s = textVal.toDart;
-      if (s.isNotEmpty) return s;
-    }
-  }
-
-  return null;
 }

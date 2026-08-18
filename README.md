@@ -63,13 +63,14 @@ Vẫn có **Tải CSV/TXT** nếu muốn file offline.
 3. Kết quả hiện ở panel bên cạnh (hoặc bên dưới trên mobile).
 4. **Sao chép** để lấy nội dung; nhấn giữ mục lịch sử để copy nhanh.
 5. Dùng nút flash / đổi camera / **zoom 1×–4×** / **chế độ quét** trên thanh tiêu đề khi cần.
-6. **Quét từ ảnh** (web): chọn ảnh từ thư viện — thử nhiều pipeline (quiet zone, contrast, crop).
-7. Chế độ **Chấm / thấp** hoặc **Mạnh** cho mã khó đọc (dot, tương phản thấp, cắt sát viền).
+6. **Quét từ ảnh** (web): chọn ảnh — decode **song song** zxing-wasm + rxing-wasm, nhiều binarizer & Niblack.
+7. Camera web tự bọc `ZXingWASM.readBarcodes` — mỗi frame chạy **3 engine song song** (zxing×2 + rxing).
 
 ## Công nghệ
 
 - [Flutter](https://flutter.dev/)
-- [mobile_scanner](https://pub.dev/packages/mobile_scanner) — Data Matrix trên Android (ML Kit), iOS (Vision), Web (zxing-wasm)
+- [mobile_scanner](https://pub.dev/packages/mobile_scanner) — Data Matrix (ML Kit / Vision / zxing-wasm)
+- **zxing-wasm** + **rxing-wasm** decode song song trên web (`web/multi_decoder.js`)
 
 ## Build release
 
