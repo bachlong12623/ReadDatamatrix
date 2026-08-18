@@ -15,18 +15,6 @@ external JSPromise<JSArray<JSObject>> _wasmReadBarcodes(
   JSObject options,
 );
 
-@JS()
-@staticInterop
-class WasmReadResult {}
-
-extension WasmReadResultExt on WasmReadResult {
-  @JS('isValid')
-  external bool get isValid;
-
-  @JS('text')
-  external String? get text;
-}
-
 Future<ImageDecodeResult?> pickAndDecodeImage() async {
   final input = HTMLInputElement()
     ..type = 'file'
