@@ -62,7 +62,9 @@ Vẫn có **Tải CSV/TXT** nếu muốn file offline.
 2. Đưa mã Data Matrix vào khung quét.
 3. Kết quả hiện ở panel bên cạnh (hoặc bên dưới trên mobile).
 4. **Sao chép** để lấy nội dung; nhấn giữ mục lịch sử để copy nhanh.
-5. Dùng nút flash / đổi camera trên thanh tiêu đề khi cần.
+5. Dùng nút flash / đổi camera / **zoom 1×–4×** / **chế độ quét** trên thanh tiêu đề khi cần.
+6. **Quét từ ảnh** (web): chọn ảnh từ thư viện — thử nhiều pipeline (quiet zone, contrast, crop).
+7. Chế độ **Chấm / thấp** hoặc **Mạnh** cho mã khó đọc (dot, tương phản thấp, cắt sát viền).
 
 ## Công nghệ
 

@@ -3,8 +3,8 @@ import 'dart:js_interop_unsafe';
 
 import 'package:web/web.dart';
 
-/// iPhone Air / Safari: playsinline + khóa zoom 1x + continuous focus.
-Future<void> tuneIosSafariCamera() async {
+/// iPhone Air / Safari: playsinline + zoom + continuous focus.
+Future<void> tuneIosSafariCamera({double zoomScale = 1.0}) async {
   final videos = document.querySelectorAll('video');
   for (var i = 0; i < videos.length; i++) {
     final node = videos.item(i);
@@ -22,12 +22,15 @@ Future<void> tuneIosSafariCamera() async {
 
     final stream = src as MediaStream;
     for (final track in stream.getVideoTracks().toDart) {
-      await _applyBestEffortConstraints(track);
+      await _applyBestEffortConstraints(track, zoomScale: zoomScale);
     }
   }
 }
 
-Future<void> _applyBestEffortConstraints(MediaStreamTrack track) async {
+Future<void> _applyBestEffortConstraints(
+  MediaStreamTrack track, {
+  double zoomScale = 1.0,
+}) async {
   // Continuous AF — Fusion Main (ƒ/1.6) lấy nét mã gần tốt hơn.
   try {
     final focus = JSObject();
@@ -35,10 +38,10 @@ Future<void> _applyBestEffortConstraints(MediaStreamTrack track) async {
     await track.applyConstraints(focus as MediaTrackConstraints).toDart;
   } catch (_) {}
 
-  // Zoom 1.0 — hạn chế iOS nhảy sang crop 2× khi đưa mã lại gần.
+  // Zoom — 1× mặc định; user có thể chọn 2×/4× cho mã nhỏ / chấm.
   try {
     final zoom = JSObject();
-    zoom.setProperty('zoom'.toJS, 1.0.toJS);
+    zoom.setProperty('zoom'.toJS, zoomScale.clamp(1.0, 4.0).toJS);
     final advanced = JSArray<JSObject>();
     advanced.add(zoom);
 

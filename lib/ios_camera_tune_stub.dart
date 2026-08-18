@@ -1,1 +1,1 @@
-Future<void> tuneIosSafariCamera() async {}
+Future<void> tuneIosSafariCamera({double zoomScale = 1.0}) async {}

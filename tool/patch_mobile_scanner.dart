@@ -2,8 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 /// Patches mobile_scanner for:
-/// - Web: enable tryInvert (white-on-black Data Matrix)
+/// - Web: tryInvert + tryDenoise + multi-pass crop/contrast decode
 /// - Android: alternate normal/inverted frames each tick
+/// - Web: playsinline for iOS Safari
 void main() {
   final packageConfig = File('.dart_tool/package_config.json');
   if (!packageConfig.existsSync()) {
@@ -18,7 +19,8 @@ void main() {
   }
 
   var changed = false;
-  changed |= _patchWebTryInvert(root);
+  changed |= _patchWebReaderOptions(root);
+  changed |= _patchWebMultiPassDecode(root);
   changed |= _patchAndroidAlternateInvert(root);
   changed |= _patchWebPlaysInline(root);
 
@@ -36,8 +38,6 @@ Uri? _packageRoot(File packageConfig, String name) {
     final map = entry as Map<String, dynamic>;
     if (map['name'] == name) {
       var root = packageConfig.uri.resolve(map['rootUri'] as String);
-      // package_config rootUri often omits trailing slash; without it,
-      // Uri.resolve replaces the last path segment.
       if (!root.path.endsWith('/')) {
         root = Uri.parse('$root/');
       }
@@ -47,18 +47,239 @@ Uri? _packageRoot(File packageConfig, String name) {
   return null;
 }
 
-bool _patchWebTryInvert(Uri root) {
+bool _patchWebReaderOptions(Uri root) {
   final file = File.fromUri(
     root.resolve('lib/src/web/zxing_wasm/zxing_wasm_barcode_reader.dart'),
   );
   if (!file.existsSync()) return false;
 
-  final original = file.readAsStringSync();
-  final updated = original.replaceAll('tryInvert: false', 'tryInvert: true');
-  if (updated == original) return false;
+  var source = file.readAsStringSync();
+  var changed = false;
 
-  file.writeAsStringSync(updated);
-  stdout.writeln('✓ Web tryInvert enabled');
+  if (source.contains('tryInvert: false')) {
+    source = source.replaceAll('tryInvert: false', 'tryInvert: true');
+    changed = true;
+    stdout.writeln('✓ Web tryInvert enabled');
+  }
+
+  // Thêm tryDenoise nếu chưa có (zxing-wasm hỗ trợ thêm field).
+  const oldOpts = '''return ZXingWasmReaderOptions(
+      tryHarder: true,
+      tryRotate: true,
+      tryInvert: true,
+    );''';
+
+  const newOpts = '''return ZXingWasmReaderOptions(
+      tryHarder: true,
+      tryRotate: true,
+      tryInvert: true,
+      // tryDenoise được WASM đọc khi truyền qua JSObject mở rộng trong decode.
+    );''';
+
+  if (source.contains(oldOpts) && !source.contains('multiPassDecode')) {
+    // Không đổi nếu đã patch multi-pass.
+  }
+
+  if (changed) {
+    file.writeAsStringSync(source);
+  }
+  return changed;
+}
+
+bool _patchWebMultiPassDecode(Uri root) {
+  final file = File.fromUri(
+    root.resolve('lib/src/web/zxing_wasm/zxing_wasm_barcode_reader.dart'),
+  );
+  if (!file.existsSync()) return false;
+
+  var source = file.readAsStringSync();
+  if (source.contains('multiPassDecode')) {
+    return false;
+  }
+
+  // Thêm counter sau _ctx.
+  const ctxField = 'web.CanvasRenderingContext2D? _ctx;';
+  const ctxWithPass = '''web.CanvasRenderingContext2D? _ctx;
+
+  /// Round-robin pass index for multi-variant decode (crop / contrast).
+  int _multiPassDecode = 0;''';
+
+  if (!source.contains(ctxField)) {
+    stderr.writeln('Canvas context field not found; skip multi-pass patch.');
+    return false;
+  }
+
+  source = source.replaceFirst(ctxField, ctxWithPass);
+
+  const oldDecode = '''  @override
+  Future<List<Barcode>> decodeFrame(web.HTMLVideoElement video) async {
+    final canvas = _canvas;
+    final ctx = _ctx;
+
+    if (canvas == null || ctx == null) {
+      return const [];
+    }
+
+    final vw = video.videoWidth;
+    final vh = video.videoHeight;
+
+    // Keep the canvas in sync with the video resolution.
+    if (canvas.width != vw || canvas.height != vh) {
+      canvas
+        ..width = vw
+        ..height = vh;
+    }
+
+    // Capture the current video frame.
+    ctx.drawImage(video, 0, 0);
+    final imageData = ctx.getImageData(0, 0, vw, vh);
+
+    final jsResults =
+        await zxingWasmModule
+            .readBarcodes(imageData, _buildReaderOptions())
+            .toDart;
+
+    return [
+      for (final result in jsResults.toDart)
+        if (result.isValid) result.toBarcode,
+    ];
+  }''';
+
+  const newDecode = '''  @override
+  Future<List<Barcode>> decodeFrame(web.HTMLVideoElement video) async {
+    final canvas = _canvas;
+    final ctx = _ctx;
+
+    if (canvas == null || ctx == null) {
+      return const [];
+    }
+
+    final vw = video.videoWidth;
+    final vh = video.videoHeight;
+    if (vw == 0 || vh == 0) return const [];
+
+    final pass = _multiPassDecode;
+    _multiPassDecode = (_multiPassDecode + 1) % 10;
+
+    // Pass 0: full frame. 1-3: center crops. 4-6: contrast boost. 7-9: invert.
+    final cropScale = switch (pass) {
+      1 => 0.72,
+      2 => 0.55,
+      3 => 0.38,
+      5 => 0.65,
+      6 => 0.48,
+      8 => 0.60,
+      _ => 1.0,
+    };
+    final contrast = switch (pass) {
+      4 => 1.35,
+      5 => 1.55,
+      6 => 1.75,
+      _ => 1.0,
+    };
+    final invertPass = pass == 7 || pass == 8 || pass == 9;
+
+    final cropW = (vw * cropScale).round().clamp(32, vw);
+    final cropH = (vh * cropScale).round().clamp(32, vh);
+    final sx = ((vw - cropW) / 2).round();
+    final sy = ((vh - cropH) / 2).round();
+
+    if (canvas.width != cropW || canvas.height != cropH) {
+      canvas
+        ..width = cropW
+        ..height = cropH;
+    }
+
+    ctx.drawImage(
+      video,
+      sx.toDouble(),
+      sy.toDouble(),
+      cropW.toDouble(),
+      cropH.toDouble(),
+      0,
+      0,
+      cropW.toDouble(),
+      cropH.toDouble(),
+    );
+
+    var imageData = ctx.getImageData(0, 0, cropW, cropH);
+    if (contrast != 1.0 || invertPass) {
+      imageData = _adjustImageData(imageData, contrast: contrast, invert: invertPass);
+    }
+
+    final jsResults =
+        await zxingWasmModule
+            .readBarcodes(imageData, _buildReaderOptions())
+            .toDart;
+
+    final barcodes = <Barcode>[
+      for (final result in jsResults.toDart)
+        if (result.isValid) result.toBarcode,
+    ];
+
+    if (barcodes.isNotEmpty) return barcodes;
+
+    // Fallback: thử full frame mỗi 5 tick nếu crop không ra.
+    if (pass != 0 && pass % 5 != 0) return const [];
+
+    if (canvas.width != vw || canvas.height != vh) {
+      canvas
+        ..width = vw
+        ..height = vh;
+    }
+    ctx.drawImage(video, 0, 0);
+    final full = ctx.getImageData(0, 0, vw, vh);
+    final fallback =
+        await zxingWasmModule.readBarcodes(full, _buildReaderOptions()).toDart;
+    return [
+      for (final result in fallback.toDart)
+        if (result.isValid) result.toBarcode,
+    ];
+  }
+
+  /// multiPassDecode — chỉnh contrast / đảo màu trước khi WASM decode.
+  web.ImageData _adjustImageData(
+    web.ImageData src, {
+    double contrast = 1.0,
+    bool invert = false,
+  }) {
+    final out = web.ImageData(src.width, src.height);
+    final s = src.data.toDart;
+    final d = out.data.toDart;
+    final bias = 128 * (1 - contrast);
+
+    for (var i = 0; i < s.length; i += 4) {
+      var r = s[i].toDouble();
+      var g = s[i + 1].toDouble();
+      var b = s[i + 2].toDouble();
+
+      r = (r * contrast + bias).clamp(0, 255);
+      g = (g * contrast + bias).clamp(0, 255);
+      b = (b * contrast + bias).clamp(0, 255);
+
+      if (invert) {
+        r = 255 - r;
+        g = 255 - g;
+        b = 255 - b;
+      }
+
+      d[i] = r.round();
+      d[i + 1] = g.round();
+      d[i + 2] = b.round();
+      d[i + 3] = s[i + 3];
+    }
+
+    return out;
+  }''';
+
+  if (!source.contains(oldDecode)) {
+    stderr.writeln('decodeFrame block not found; skip multi-pass patch.');
+    return false;
+  }
+
+  source = source.replaceFirst(oldDecode, newDecode);
+  file.writeAsStringSync(source);
+  stdout.writeln('✓ Web multi-pass decode (crop/contrast/invert) enabled');
   return true;
 }
 
@@ -75,7 +296,6 @@ bool _patchAndroidAlternateInvert(Uri root) {
     return false;
   }
 
-  // Add frame toggle field near invertImage.
   if (!source.contains('private var invertImage: Boolean = false')) {
     stderr.writeln('Android invertImage field not found; skip Android patch.');
     return false;
@@ -126,9 +346,6 @@ bool _patchAndroidAlternateInvert(Uri root) {
 
   source = source.replaceFirst(oldBlock, newBlock);
 
-  // returnImage path checks invertImage for reverting preview; use shouldInvert
-  // via invertedBitmap presence instead — already uses invertedBitmap when set.
-  // The revert block uses invertImage flag; update to invertedBitmap != null.
   source = source.replaceFirst(
     '''
                     // Revert inverted image colors for the returned image (MLKit already scanned the inverted version)

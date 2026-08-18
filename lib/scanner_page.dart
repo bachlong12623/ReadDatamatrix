@@ -10,11 +10,14 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'app_theme.dart';
 import 'barcode_payload.dart';
 import 'device_profile.dart';
+import 'image_decode.dart';
 import 'ios_camera_tune.dart';
 import 'scan_export.dart';
+import 'scan_modes.dart';
 import 'scan_store.dart';
 import 'github_sync.dart';
 import 'github_sync_sheet.dart';
+import 'web_zoom.dart';
 
 class ScannerPage extends StatefulWidget {
   const ScannerPage({super.key});
@@ -35,6 +38,9 @@ class _ScannerPageState extends State<ScannerPage> {
   late MobileScannerController _controller;
   bool _ready = false;
   bool _invertImage = false;
+  ScanMode _scanMode = ScanMode.balanced;
+  ScanZoom _zoom = ScanZoom.x1;
+  bool _decodingImage = false;
   bool _closeRangeApplied = false;
   bool _rebuildingController = false;
   bool _iosCameraTuned = false;
@@ -171,18 +177,26 @@ class _ScannerPageState extends State<ScannerPage> {
     }
   }
 
-  MobileScannerController _createController({required bool invertImage}) {
+  MobileScannerController _createController({
+    required bool invertImage,
+    ScanMode? mode,
+  }) {
     final iosWeb = _profile.isIosSafariFamily;
+    final scanMode = mode ?? _scanMode;
+    final timeout = scanMode.detectionTimeoutMs(iosWeb: iosWeb);
+    // Chế độ mạnh: quét chậm hơn nhưng kỹ hơn trên iOS Safari.
+    final speed = scanMode == ScanMode.aggressive && iosWeb
+        ? DetectionSpeed.normal
+        : (iosWeb ? DetectionSpeed.normal : DetectionSpeed.unrestricted);
 
     return MobileScannerController(
       facing: CameraFacing.back,
-      // iPhone Safari: WASM nặng — interval ~100ms ổn định hơn unrestricted.
-      detectionSpeed: iosWeb ? DetectionSpeed.normal : DetectionSpeed.unrestricted,
-      detectionTimeoutMs: iosWeb ? 100 : 250,
+      detectionSpeed: speed,
+      detectionTimeoutMs: timeout,
       formats: const [BarcodeFormat.dataMatrix],
-      // Web/iPhone Air: yêu cầu 1080p (Fusion Main xử lý tốt, WASM vẫn kịp).
       cameraResolution: const Size(1920, 1080),
-      autoZoom: false,
+      autoZoom: scanMode.autoZoom && !kIsWeb,
+      initialZoom: _zoom.scale,
       invertImage: invertImage && !kIsWeb,
     );
   }
@@ -201,11 +215,13 @@ class _ScannerPageState extends State<ScannerPage> {
   }
 
   Future<void> _tuneIosCamera() async {
-    // Đợi video gắn vào DOM rồi khóa zoom/playsinline.
+    // Đợi video gắn vào DOM rồi áp zoom/playsinline.
     await Future<void>.delayed(const Duration(milliseconds: 350));
-    await tuneIosSafariCamera();
+    await tuneIosSafariCamera(zoomScale: _zoom.scale);
+    await applyWebDigitalZoom(_zoom.scale);
     await Future<void>.delayed(const Duration(milliseconds: 700));
-    await tuneIosSafariCamera();
+    await tuneIosSafariCamera(zoomScale: _zoom.scale);
+    await applyWebDigitalZoom(_zoom.scale);
   }
 
   Future<void> _preferCloseRangeLens() async {
@@ -229,23 +245,115 @@ class _ScannerPageState extends State<ScannerPage> {
     }
   }
 
-  Future<void> _rebuildController({required bool invertImage}) async {
+  Future<void> _rebuildController({
+    required bool invertImage,
+    ScanMode? mode,
+  }) async {
     if (_rebuildingController) return;
     _rebuildingController = true;
     setState(() {
       _invertImage = invertImage;
+      if (mode != null) _scanMode = mode;
       _closeRangeApplied = false;
       _iosCameraTuned = false;
     });
 
     final old = _controller;
     old.removeListener(_onControllerState);
-    final next = _createController(invertImage: invertImage);
+    final next = _createController(invertImage: invertImage, mode: mode);
     next.addListener(_onControllerState);
 
     setState(() => _controller = next);
     await old.dispose();
     _rebuildingController = false;
+    await _applyZoom(_zoom, silent: true);
+  }
+
+  Future<void> _setScanMode(ScanMode mode) async {
+    if (mode == _scanMode) return;
+    final suggested = ScanZoom.nearest(mode.defaultZoom);
+    setState(() => _zoom = suggested);
+    await _rebuildController(invertImage: _invertImage, mode: mode);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Chế độ quét: ${mode.label}')),
+    );
+  }
+
+  Future<void> _applyZoom(ScanZoom zoom, {bool silent = false}) async {
+    setState(() => _zoom = zoom);
+    if (kIsWeb) {
+      await applyWebDigitalZoom(zoom.scale);
+      if (_profile.isIosSafariFamily) {
+        await tuneIosSafariCamera(zoomScale: zoom.scale);
+      }
+    } else {
+      try {
+        await _controller.setZoomScale(zoom.scale);
+      } catch (_) {
+        if (!silent && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Zoom không khả dụng trên thiết bị này.')),
+          );
+        }
+      }
+    }
+    if (!silent && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Zoom ${zoom.label}')),
+      );
+    }
+  }
+
+  Future<void> _pickImageAndDecode() async {
+    if (_decodingImage) return;
+    setState(() => _decodingImage = true);
+    try {
+      final result = await pickAndDecodeImage();
+      if (!mounted) return;
+      if (result == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Không đọc được mã trong ảnh — thử chế độ Mạnh hoặc ảnh có viền trắng.'),
+          ),
+        );
+        return;
+      }
+      _acceptDecodedValue(result.text);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result.variant == null
+                ? 'Đã đọc từ ảnh.'
+                : 'Đã đọc (${result.variant}).',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Lỗi đọc ảnh: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _decodingImage = false);
+    }
+  }
+
+  void _acceptDecodedValue(String value) {
+    final now = DateTime.now();
+    setState(() {
+      _latestResult = value;
+      _latestAt = now;
+      _lastAccepted = value;
+      _lastAcceptedAt = now;
+      _history.removeWhere((e) => e.text == value);
+      _history.insert(0, ScanRecord(text: value, at: now));
+      if (_history.length > ScanStore.maxRecords) {
+        _history.removeRange(ScanStore.maxRecords, _history.length);
+      }
+    });
+    unawaited(_persistHistory());
+    HapticFeedback.mediumImpact();
   }
 
   @override
@@ -441,17 +549,35 @@ class _ScannerPageState extends State<ScannerPage> {
             _Header(
               invertActive: _invertImage,
               syncing: _syncing,
+              decodingImage: _decodingImage,
               githubReady: _github?.loadConfig().isReady ?? false,
+              scanMode: _scanMode,
+              zoom: _zoom,
               onTorch: _toggleTorch,
               onSwitchCamera: _switchCamera,
               onInvert: _toggleInvert,
+              onPickImage: _pickImageAndDecode,
+              onScanMode: _setScanMode,
+              onZoom: _applyZoom,
               onGithubSettings: _openGithubSettings,
               onSync: () => _syncWithGithub(),
               compact: phone,
               subtitle: iphone
-                  ? 'iPhone · Safari · camera 1×'
-                  : (_syncStatus ?? 'Vuông · chữ nhật · GitHub JSON'),
+                  ? 'iPhone · ${_scanMode.label} · ${_zoom.label}'
+                  : (_syncStatus ?? _scanMode.hint),
             ),
+            if (phone) ...[
+              const SizedBox(height: 6),
+              _CompactScanToolbar(
+                scanMode: _scanMode,
+                zoom: _zoom,
+                invertActive: _invertImage,
+                onScanMode: _setScanMode,
+                onZoom: _applyZoom,
+                onInvert: _toggleInvert,
+                onTorch: _toggleTorch,
+              ),
+            ],
             const SizedBox(height: 8),
             Expanded(
               child: wide
@@ -496,7 +622,7 @@ class _ScannerPageState extends State<ScannerPage> {
           ColoredBox(color: colors.surface),
           MobileScanner(
             key: ValueKey(
-              'scanner-invert-$_invertImage-${identityHashCode(_controller)}',
+              'scanner-${_scanMode.name}-$_invertImage-${_zoom.name}-${identityHashCode(_controller)}',
             ),
             controller: _controller,
             fit: BoxFit.cover,
@@ -541,10 +667,8 @@ class _ScannerPageState extends State<ScannerPage> {
             bottom: 16,
             child: Text(
               _invertImage
-                  ? 'Chế độ đảo màu · mã trắng trên nền đen'
-                  : _profile.isIphone
-                      ? 'Giữ ~15–25 cm · camera sau 1× · chạm để lấy nét'
-                      : 'Vuông / chữ nhật · thường / đảo màu đều được',
+                  ? 'Đảo màu · mã trắng trên nền đen'
+                  : '${_scanMode.label} · ${_zoom.label} · vuông/chữ nhật/chấm',
               textAlign: TextAlign.center,
               style: GoogleFonts.spaceGrotesk(
                 color: Colors.white.withValues(alpha: 0.9),
@@ -884,10 +1008,16 @@ class _Header extends StatelessWidget {
   const _Header({
     required this.invertActive,
     required this.syncing,
+    required this.decodingImage,
     required this.githubReady,
+    required this.scanMode,
+    required this.zoom,
     required this.onTorch,
     required this.onSwitchCamera,
     required this.onInvert,
+    required this.onPickImage,
+    required this.onScanMode,
+    required this.onZoom,
     required this.onGithubSettings,
     required this.onSync,
     this.compact = false,
@@ -896,11 +1026,17 @@ class _Header extends StatelessWidget {
 
   final bool invertActive;
   final bool syncing;
+  final bool decodingImage;
   final bool githubReady;
+  final ScanMode scanMode;
+  final ScanZoom zoom;
   final bool compact;
   final VoidCallback onTorch;
   final VoidCallback onSwitchCamera;
   final VoidCallback onInvert;
+  final VoidCallback onPickImage;
+  final ValueChanged<ScanMode> onScanMode;
+  final ValueChanged<ScanZoom> onZoom;
   final VoidCallback onGithubSettings;
   final VoidCallback onSync;
   final String subtitle;
@@ -988,7 +1124,59 @@ class _Header extends StatelessWidget {
           onPressed: onGithubSettings,
           icon: Icons.key_rounded,
         ),
+        iconBtn(
+          tooltip: 'Quét từ ảnh',
+          onPressed: decodingImage ? null : onPickImage,
+          icon: Icons.photo_library_outlined,
+          child: decodingImage
+              ? SizedBox(
+                  width: compact ? 16 : 18,
+                  height: compact ? 16 : 18,
+                  child: const CircularProgressIndicator(strokeWidth: 2),
+                )
+              : null,
+        ),
+        PopupMenuButton<ScanMode>(
+          tooltip: 'Chế độ quét',
+          initialValue: scanMode,
+          onSelected: onScanMode,
+          icon: Icon(
+            Icons.tune_rounded,
+            size: compact ? 20 : 24,
+            color: scanMode != ScanMode.balanced
+                ? colors.accent
+                : const Color(0xFFE8F1F4),
+          ),
+          itemBuilder: (context) => ScanMode.values
+              .map(
+                (m) => PopupMenuItem(
+                  value: m,
+                  child: Text('${m.label} — ${m.hint}'),
+                ),
+              )
+              .toList(),
+        ),
         if (!compact) ...[
+          for (final z in ScanZoom.values)
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: iconBtn(
+                tooltip: 'Zoom ${z.label}',
+                onPressed: () => onZoom(z),
+                icon: Icons.zoom_in_map,
+                active: zoom == z,
+                child: Text(
+                  z.label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: zoom == z
+                        ? colors.accent
+                        : const Color(0xFFE8F1F4),
+                  ),
+                ),
+              ),
+            ),
           iconBtn(
             tooltip: 'Đảo màu (Android)',
             onPressed: onInvert,
@@ -1008,6 +1196,90 @@ class _Header extends StatelessWidget {
           icon: Icons.cameraswitch_rounded,
         ),
       ],
+    );
+  }
+}
+
+class _CompactScanToolbar extends StatelessWidget {
+  const _CompactScanToolbar({
+    required this.scanMode,
+    required this.zoom,
+    required this.invertActive,
+    required this.onScanMode,
+    required this.onZoom,
+    required this.onInvert,
+    required this.onTorch,
+  });
+
+  final ScanMode scanMode;
+  final ScanZoom zoom;
+  final bool invertActive;
+  final ValueChanged<ScanMode> onScanMode;
+  final ValueChanged<ScanZoom> onZoom;
+  final VoidCallback onInvert;
+  final VoidCallback onTorch;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<AppColors>()!;
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final z in ScanZoom.values)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: FilterChip(
+                label: Text(z.label),
+                selected: zoom == z,
+                onSelected: (_) => onZoom(z),
+                visualDensity: VisualDensity.compact,
+                selectedColor: colors.accent.withValues(alpha: 0.25),
+              ),
+            ),
+          PopupMenuButton<ScanMode>(
+            initialValue: scanMode,
+            onSelected: onScanMode,
+            itemBuilder: (context) => ScanMode.values
+                .map(
+                  (m) => PopupMenuItem(
+                    value: m,
+                    child: Text(m.label),
+                  ),
+                )
+                .toList(),
+            child: Chip(
+              avatar: Icon(
+                Icons.tune_rounded,
+                size: 16,
+                color: scanMode != ScanMode.balanced
+                    ? colors.accent
+                    : colors.muted,
+              ),
+              label: Text(scanMode.label),
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+          const SizedBox(width: 6),
+          IconButton.outlined(
+            tooltip: 'Đảo màu',
+            onPressed: onInvert,
+            visualDensity: VisualDensity.compact,
+            icon: Icon(
+              Icons.invert_colors_rounded,
+              color: invertActive ? colors.accent : null,
+              size: 20,
+            ),
+          ),
+          IconButton.outlined(
+            tooltip: 'Đèn flash',
+            onPressed: onTorch,
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.flash_on_rounded, size: 20),
+          ),
+        ],
+      ),
     );
   }
 }
