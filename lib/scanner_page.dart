@@ -323,9 +323,9 @@ class _ScannerPageState extends State<ScannerPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            result.variant == null
+            result.label == result.text
                 ? 'Đã đọc từ ảnh.'
-                : 'Đã đọc (${result.variant}).',
+                : 'Đã đọc: ${result.label}',
           ),
         ),
       );
