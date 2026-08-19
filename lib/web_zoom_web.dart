@@ -16,7 +16,7 @@ Future<void> applyWebDigitalZoom(double scale) async {
     final node = videos.item(i);
     if (node == null) continue;
     final video = node as HTMLVideoElement;
-    final parent = video.parentElement;
+    final parent = video.parentElement as HTMLElement?;
 
     if (clamped <= 1.01) {
       video.style.removeProperty('transform');
