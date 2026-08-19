@@ -21,6 +21,7 @@ void main() {
   var changed = false;
   changed |= _patchWebReaderOptions(root);
   changed |= _patchWebMultiPassDecode(root);
+  changed |= _patchWebUserZoomDecode(root);
   changed |= _patchAndroidAlternateInvert(root);
   changed |= _patchWebPlaysInline(root);
 
@@ -179,8 +180,10 @@ bool _patchWebMultiPassDecode(Uri root) {
     };
     final invertPass = pass == 7 || pass == 8 || pass == 9;
 
-    final cropW = (vw * cropScale).round().clamp(32, vw);
-    final cropH = (vh * cropScale).round().clamp(32, vh);
+    final userZoom = _userZoomScale();
+    final effectiveCrop = (cropScale / userZoom).clamp(0.2, 1.0);
+    final cropW = (vw * effectiveCrop).round().clamp(32, vw);
+    final cropH = (vh * effectiveCrop).round().clamp(32, vh);
     final sx = ((vw - cropW) / 2).round();
     final sy = ((vh - cropH) / 2).round();
 
@@ -227,8 +230,28 @@ bool _patchWebMultiPassDecode(Uri root) {
         ..width = vw
         ..height = vh;
     }
-    ctx.drawImage(video, 0, 0);
-    final full = ctx.getImageData(0, 0, vw, vh);
+    final fallbackCrop = (1.0 / userZoom).clamp(0.2, 1.0);
+    final fbW = (vw * fallbackCrop).round().clamp(32, vw);
+    final fbH = (vh * fallbackCrop).round().clamp(32, vh);
+    final fbSx = ((vw - fbW) / 2).round();
+    final fbSy = ((vh - fbH) / 2).round();
+    if (canvas.width != fbW || canvas.height != fbH) {
+      canvas
+        ..width = fbW
+        ..height = fbH;
+    }
+    ctx.drawImage(
+      video,
+      fbSx.toDouble(),
+      fbSy.toDouble(),
+      fbW.toDouble(),
+      fbH.toDouble(),
+      0,
+      0,
+      fbW.toDouble(),
+      fbH.toDouble(),
+    );
+    final full = ctx.getImageData(0, 0, fbW, fbH);
     final fallback =
         await zxingWasmModule.readBarcodes(full, _buildReaderOptions()).toDart;
     return [
@@ -270,6 +293,17 @@ bool _patchWebMultiPassDecode(Uri root) {
     }
 
     return out;
+  }
+
+  /// Zoom UI 1×–4× (ReadDatamatrixCameraZoom) — crop decode tương ứng.
+  double _userZoomScale() {
+    try {
+      final z = globalContext.getProperty('ReadDatamatrixCameraZoom'.toJS);
+      if (z is JSNumber) {
+        return z.toDartDouble.clamp(1.0, 4.0);
+      }
+    } catch (_) {}
+    return 1.0;
   }''';
 
   if (!source.contains(oldDecode)) {
@@ -278,8 +312,100 @@ bool _patchWebMultiPassDecode(Uri root) {
   }
 
   source = source.replaceFirst(oldDecode, newDecode);
+
+  if (!source.contains('dart:js_interop_unsafe')) {
+    source = source.replaceFirst(
+      "import 'dart:js_interop';\n",
+      "import 'dart:js_interop';\nimport 'dart:js_interop_unsafe';\n",
+    );
+  }
+
   file.writeAsStringSync(source);
   stdout.writeln('✓ Web multi-pass decode (crop/contrast/invert) enabled');
+  return true;
+}
+
+/// Nâng cấp bản đã patch multi-pass: thêm crop theo zoom UI.
+bool _patchWebUserZoomDecode(Uri root) {
+  final file = File.fromUri(
+    root.resolve('lib/src/web/zxing_wasm/zxing_wasm_barcode_reader.dart'),
+  );
+  if (!file.existsSync()) return false;
+
+  var source = file.readAsStringSync();
+  if (source.contains('_userZoomScale')) return false;
+  if (!source.contains('_multiPassDecode')) return false;
+
+  if (!source.contains('dart:js_interop_unsafe')) {
+    source = source.replaceFirst(
+      "import 'dart:js_interop';\n",
+      "import 'dart:js_interop';\nimport 'dart:js_interop_unsafe';\n",
+    );
+  }
+
+  const oldCrop = '''    final cropW = (vw * cropScale).round().clamp(32, vw);
+    final cropH = (vh * cropScale).round().clamp(32, vh);''';
+
+  const newCrop = '''    final userZoom = _userZoomScale();
+    final effectiveCrop = (cropScale / userZoom).clamp(0.2, 1.0);
+    final cropW = (vw * effectiveCrop).round().clamp(32, vw);
+    final cropH = (vh * effectiveCrop).round().clamp(32, vh);''';
+
+  if (!source.contains(oldCrop)) return false;
+  source = source.replaceFirst(oldCrop, newCrop);
+
+  const oldFallback = '''    ctx.drawImage(video, 0, 0);
+    final full = ctx.getImageData(0, 0, vw, vh);''';
+
+  const newFallback = '''    final fallbackCrop = (1.0 / userZoom).clamp(0.2, 1.0);
+    final fbW = (vw * fallbackCrop).round().clamp(32, vw);
+    final fbH = (vh * fallbackCrop).round().clamp(32, vh);
+    final fbSx = ((vw - fbW) / 2).round();
+    final fbSy = ((vh - fbH) / 2).round();
+    if (canvas.width != fbW || canvas.height != fbH) {
+      canvas
+        ..width = fbW
+        ..height = fbH;
+    }
+    ctx.drawImage(
+      video,
+      fbSx.toDouble(),
+      fbSy.toDouble(),
+      fbW.toDouble(),
+      fbH.toDouble(),
+      0,
+      0,
+      fbW.toDouble(),
+      fbH.toDouble(),
+    );
+    final full = ctx.getImageData(0, 0, fbW, fbH);''';
+
+  if (source.contains(oldFallback)) {
+    source = source.replaceFirst(oldFallback, newFallback);
+  }
+
+  const helperAnchor = '''    return out;
+  }''';
+
+  const helperWithZoom = '''    return out;
+  }
+
+  double _userZoomScale() {
+    try {
+      final z = globalContext.getProperty('ReadDatamatrixCameraZoom'.toJS);
+      if (z is JSNumber) {
+        return z.toDartDouble.clamp(1.0, 4.0);
+      }
+    } catch (_) {}
+    return 1.0;
+  }''';
+
+  if (source.contains(helperAnchor)) {
+    source = source.replaceFirst(helperAnchor, helperWithZoom);
+  }
+
+  file.writeAsStringSync(source);
+  stdout.writeln('✓ Web user zoom decode crop enabled');
   return true;
 }
 

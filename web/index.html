@@ -64,6 +64,7 @@
 </head>
 <body>
   <!-- Chỉ dùng cho quét ảnh — không bọc camera ZXingWASM -->
+  <script>globalThis.ReadDatamatrixCameraZoom = 1;</script>
   <script type="module" src="multi_decoder.js" defer></script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
