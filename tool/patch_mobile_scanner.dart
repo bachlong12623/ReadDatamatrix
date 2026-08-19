@@ -243,7 +243,7 @@ bool _patchWebMultiPassDecode(Uri root) {
     double contrast = 1.0,
     bool invert = false,
   }) {
-    final out = web.ImageData(src.width.toJS, src.height.toJS);
+    final out = web.ImageData(src.width, src.height);
     final s = src.data.toDart;
     final d = out.data.toDart;
     final bias = 128 * (1 - contrast);
