@@ -63,8 +63,7 @@ Vẫn có **Tải CSV/TXT** nếu muốn file offline.
 3. Kết quả hiện ở panel bên cạnh (hoặc bên dưới trên mobile).
 4. **Sao chép** để lấy nội dung; nhấn giữ mục lịch sử để copy nhanh.
 5. Dùng nút flash / đổi camera / **zoom 1×–4×** / **chế độ quét** trên thanh tiêu đề khi cần.
-6. **Quét từ ảnh** (web): chọn ảnh — decode **song song** zxing-wasm + rxing-wasm, nhiều binarizer & Niblack.
-7. Camera web tự bọc `ZXingWASM.readBarcodes` — mỗi frame chạy **3 engine song song** (zxing×2 + rxing).
+6. **Quét từ ảnh** (web): decode song song zxing + rxing (chỉ khi chọn ảnh, không ảnh hưởng camera).
 
 ## Công nghệ
 
