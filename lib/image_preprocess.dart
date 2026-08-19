@@ -1,5 +1,6 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
+
+import 'dart:math' as math;
 
 /// Biến thể tiền xử lý ảnh trước khi decode.
 class PreprocessVariant {
@@ -59,7 +60,7 @@ List<PreprocessVariant> buildThoroughVariants() => const [
 
 /// Xử lý RGBA buffer — trả về buffer mới cùng kích thước.
 Uint8List processRgba(
-  Uint8List src,
+  List<int> src,
   int width,
   int height,
   PreprocessVariant v,

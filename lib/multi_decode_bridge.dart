@@ -1,3 +1,4 @@
+import 'multi_decode.dart';
 import 'multi_decode_stub.dart'
     if (dart.library.js_interop) 'multi_decode_web.dart' as impl;
 

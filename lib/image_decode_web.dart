@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
+import 'dart:typed_data';
 
 import 'package:web/web.dart';
 
@@ -21,34 +23,11 @@ Future<ImageDecodeResult?> pickAndDecodeImage() async {
     input.remove();
   }
 
-  input.onchange = ((Event _) async {
-    try {
-      final files = input.files;
-      if (files == null || files.length == 0) {
-        completer.complete(null);
-        cleanup();
-        return;
-      }
-      final file = files.item(0);
-      if (file == null) {
-        completer.complete(null);
-        cleanup();
-        return;
-      }
-      final url = URL.createObjectURL(file);
-      try {
-        final result = await _decodeImageUrl(url);
-        completer.complete(result);
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    } catch (e) {
-      completer.completeError(e);
-    } finally {
-      cleanup();
-    }
-  }).toJS;
+  void onChange(Event _) {
+    unawaited(_handleFilePick(input, completer, cleanup));
+  }
 
+  input.onchange = onChange.toJS;
   input.click();
 
   return completer.future.timeout(
@@ -58,6 +37,38 @@ Future<ImageDecodeResult?> pickAndDecodeImage() async {
       return null;
     },
   );
+}
+
+Future<void> _handleFilePick(
+  HTMLInputElement input,
+  Completer<ImageDecodeResult?> completer,
+  void Function() cleanup,
+) async {
+  try {
+    final files = input.files;
+    if (files == null || files.length == 0) {
+      completer.complete(null);
+      return;
+    }
+    final file = files.item(0);
+    if (file == null) {
+      completer.complete(null);
+      return;
+    }
+    final url = URL.createObjectURL(file);
+    try {
+      final result = await _decodeImageUrl(url);
+      completer.complete(result);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } catch (e, st) {
+    if (!completer.isCompleted) {
+      completer.completeError(e, st);
+    }
+  } finally {
+    cleanup();
+  }
 }
 
 Future<ImageDecodeResult?> _decodeImageUrl(String url) async {
@@ -73,11 +84,12 @@ Future<ImageDecodeResult?> _decodeImageUrl(String url) async {
 
   await ensureMultiDecoders();
 
-  final canvas = HTMLCanvasElement(width: w, height: h);
+  final canvas = HTMLCanvasElement()
+    ..width = w
+    ..height = h;
   final ctx = canvas.getContext('2d') as CanvasRenderingContext2D?;
   if (ctx == null) return null;
 
-  // Thử parallel toàn ảnh trước (nhanh).
   ctx.drawImage(img, 0, 0);
   final full = ctx.getImageData(0, 0, w, h);
   final quick = await decodeImageDataParallel(full, thorough: true);
@@ -89,7 +101,6 @@ Future<ImageDecodeResult?> _decodeImageUrl(String url) async {
     );
   }
 
-  // Từng biến thể preprocess + decode song song.
   for (final v in buildThoroughVariants()) {
     final imageData = _renderVariant(ctx, canvas, img, w, h, v);
     if (imageData == null) continue;
@@ -121,6 +132,9 @@ Future<void> _waitImageLoad(HTMLImageElement img) {
   return c.future;
 }
 
+ImageData _newImageData(int width, int height) =>
+    ImageData(width.toJS, height.toJS);
+
 ImageData? _renderVariant(
   CanvasRenderingContext2D ctx,
   HTMLCanvasElement canvas,
@@ -149,7 +163,7 @@ ImageData? _renderVariant(
   canvas.width = outW;
   canvas.height = outH;
 
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = '#ffffff'.toJS;
   ctx.fillRect(0, 0, outW.toDouble(), outH.toDouble());
   ctx.drawImage(
     img,
@@ -170,8 +184,14 @@ ImageData? _renderVariant(
       v.brightness != 0 ||
       v.sharpen ||
       v.invert) {
-    final processed = processRgba(data.data.toDart, outW, outH, v);
-    final out = ImageData(outW, outH);
+    final rgba = data.data.toDart;
+    final processed = processRgba(
+      Uint8List.fromList(rgba),
+      outW,
+      outH,
+      v,
+    );
+    final out = _newImageData(outW, outH);
     final d = out.data.toDart;
     for (var i = 0; i < processed.length && i < d.length; i++) {
       d[i] = processed[i];
