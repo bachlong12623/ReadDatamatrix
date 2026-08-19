@@ -132,8 +132,7 @@ Future<void> _waitImageLoad(HTMLImageElement img) {
   return c.future;
 }
 
-ImageData _newImageData(int width, int height) =>
-    ImageData(width.toJS, height.toJS);
+ImageData _newImageData(int width, int height) => ImageData(width.toJS, height);
 
 ImageData? _renderVariant(
   CanvasRenderingContext2D ctx,
