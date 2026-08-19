@@ -11,7 +11,7 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
   if (kIsWeb) {
-    // zxing-wasm + rxing-wasm song song (multi_decoder.js bọc ZXingWASM).
+    // zxing-wasm cho camera; decode song song chỉ khi quét ảnh (multi_decoder.js).
     MobileScannerPlatform.instance.setWebBarcodeReader(
       WebBarcodeReader.zxingWasm,
     );
