@@ -6,7 +6,10 @@ import 'package:web/web.dart';
 import 'multi_decode.dart';
 
 @JS('ReadDatamatrixMultiDecoder.decodeParallel')
-external JSPromise<JSObject?> _jsDecodeParallel(ImageData imageData, JSObject options);
+external JSPromise<JSObject?> _jsDecodeParallel(
+  ImageData imageData,
+  JSObject options,
+);
 
 @JS('ReadDatamatrixMultiDecoder.ensureZxing')
 external JSPromise<JSAny?> _jsEnsureZxing();
@@ -27,12 +30,10 @@ Future<MultiDecodeHit?> decodeImageDataParallel(
   Object imageData, {
   bool thorough = false,
 }) async {
-  if (imageData is! ImageData) return null;
-
   final opts = JSObject();
   opts.setProperty('thorough'.toJS, thorough.toJS);
 
-  final hit = await _jsDecodeParallel(imageData, opts).toDart;
+  final hit = await _jsDecodeParallel(imageData as ImageData, opts).toDart;
   if (hit == null) return null;
 
   final textVal = hit.getProperty('text'.toJS);
