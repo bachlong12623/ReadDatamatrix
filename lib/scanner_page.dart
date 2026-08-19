@@ -215,12 +215,11 @@ class _ScannerPageState extends State<ScannerPage> {
   }
 
   Future<void> _tuneIosCamera() async {
-    // Đợi video gắn vào DOM rồi áp zoom/playsinline.
     await Future<void>.delayed(const Duration(milliseconds: 350));
-    await tuneIosSafariCamera(zoomScale: _zoom.scale);
+    await tuneIosSafariCamera();
     await applyWebDigitalZoom(_zoom.scale);
     await Future<void>.delayed(const Duration(milliseconds: 700));
-    await tuneIosSafariCamera(zoomScale: _zoom.scale);
+    await tuneIosSafariCamera();
     await applyWebDigitalZoom(_zoom.scale);
   }
 
@@ -285,7 +284,8 @@ class _ScannerPageState extends State<ScannerPage> {
     if (kIsWeb) {
       await applyWebDigitalZoom(zoom.scale);
       if (_profile.isIosSafariFamily) {
-        await tuneIosSafariCamera(zoomScale: zoom.scale);
+        // Chỉ playsinline/focus — zoom qua CSS + crop decode, không MediaTrack.
+        await tuneIosSafariCamera();
       }
     } else {
       try {
